@@ -392,11 +392,14 @@ void ssd1306_Polyline(const SSD1306_VERTEX *par_vertex, uint16_t par_size, SSD13
 }
 
 /* Convert Degrees to Radians */
+/*
 static float ssd1306_DegToRad(float par_deg) {
     return par_deg * (3.14f / 180.0f);
 }
+*/
 
 /* Normalize degree to [0;360] */
+/*
 static uint16_t ssd1306_NormalizeTo0_360(uint16_t par_deg) {
     uint16_t loc_angle;
     if(par_deg <= 360) {
@@ -407,12 +410,13 @@ static uint16_t ssd1306_NormalizeTo0_360(uint16_t par_deg) {
     }
     return loc_angle;
 }
-
+*/
 /*
  * DrawArc. Draw angle is beginning from 4 quart of trigonometric circle (3pi/2)
  * start_angle in degree
  * sweep in degree
  */
+/*
 void ssd1306_DrawArc(uint8_t x, uint8_t y, uint8_t radius, uint16_t start_angle, uint16_t sweep, SSD1306_COLOR color) {
     static const uint8_t CIRCLE_APPROXIMATION_SEGMENTS = 36;
     float approx_degree;
@@ -446,6 +450,7 @@ void ssd1306_DrawArc(uint8_t x, uint8_t y, uint8_t radius, uint16_t start_angle,
 
     return;
 }
+*/
 
 /*
  * Draw arc with radius line
@@ -453,6 +458,7 @@ void ssd1306_DrawArc(uint8_t x, uint8_t y, uint8_t radius, uint16_t start_angle,
  * start_angle: start angle in degree
  * sweep: finish angle in degree
  */
+/*
 void ssd1306_DrawArcWithRadiusLine(uint8_t x, uint8_t y, uint8_t radius, uint16_t start_angle, uint16_t sweep, SSD1306_COLOR color) {
     const uint32_t CIRCLE_APPROXIMATION_SEGMENTS = 36;
     float approx_degree;
@@ -494,7 +500,7 @@ void ssd1306_DrawArcWithRadiusLine(uint8_t x, uint8_t y, uint8_t radius, uint16_
     ssd1306_Line(x,y,xp2,yp2,color);
     return;
 }
-
+*/
 /* Draw circle by Bresenhem's algorithm */
 void ssd1306_DrawCircle(uint8_t par_x,uint8_t par_y,uint8_t par_r,SSD1306_COLOR par_color) {
     int32_t x = -par_r;

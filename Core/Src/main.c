@@ -82,13 +82,14 @@
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
-I2C_HandleTypeDef hi2c1;
-DMA_HandleTypeDef hdma_i2c1_rx;
-DMA_HandleTypeDef hdma_i2c1_tx;
+I2C_HandleTypeDef hi2c2;
+DMA_HandleTypeDef hdma_i2c2_rx;
+DMA_HandleTypeDef hdma_i2c2_tx;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
 
@@ -147,11 +148,12 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
-static void MX_I2C1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_I2C2_Init(void);
+static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
 
 //USB-Serial Communication
@@ -202,7 +204,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 			time10ms = 0;
 			IS10MS = TRUE;
 		}
-		//HAL_ADC_Start_DMA(&hadc1, (uint32_t*) adcData, 8);
+		HAL_ADC_Start_DMA(&hadc1, (uint32_t*) adcData, 8);
 	}
 
 	if (htim->Instance == TIM2) { //20ms
@@ -368,19 +370,19 @@ void heartBeatTask() {
 }
 
 void displayMemWrite(uint8_t address, uint8_t *data, uint8_t size, uint8_t type){
-	HAL_I2C_Mem_Write(&hi2c1, address , type, 1, data, size, HAL_MAX_DELAY);
+	HAL_I2C_Mem_Write(&hi2c2, address , type, 1, data, size, HAL_MAX_DELAY);
 }
 
 void displayMemWriteDMA(uint8_t address, uint8_t *data, uint8_t size, uint8_t type){
-	HAL_I2C_Mem_Write_DMA(&hi2c1, address , type, 1, data, size);
+	HAL_I2C_Mem_Write_DMA(&hi2c2, address , type, 1, data, size);
 }
 
 void mpuMemWrite(uint8_t address, uint8_t *data, uint8_t size, uint8_t type){
-	HAL_I2C_Mem_Write(&hi2c1, address , type, 1, data, size, HAL_MAX_DELAY);
+	HAL_I2C_Mem_Write(&hi2c2, address , type, 1, data, size, HAL_MAX_DELAY);
 }
 
 void mpuMemReadDMA(uint8_t address, uint8_t *data, uint8_t size, uint8_t type){
-	HAL_I2C_Mem_Read_DMA(&hi2c1, address , type, 1, data, size);
+	HAL_I2C_Mem_Read_DMA(&hi2c2, address , type, 1, data, size);
 }
 
 void ssd1306Data() {
@@ -469,21 +471,18 @@ void i2cTask() {
 			j &= (I2CSIZE - 1);
 			break;
 		}
-/*
 		if (!Pila[j]) {
 			i = DATA_DISPLAY;
 			j++;
 			j &= (I2CSIZE - 1);
 		}
-		*/
-
 		break;
 	case DATA_DISPLAY:
 		ssd1306Data();
 		i = UPD_DISPLAY;
 		break;
 	case UPD_DISPLAY:
-		if (HAL_I2C_GetState(&hi2c1) == HAL_I2C_STATE_READY) {
+		if (HAL_I2C_GetState(&hi2c2) == HAL_I2C_STATE_READY) {
 			if (ssd1306_UpdateScreenDMA()) {
 
 				ssd1306_TxCplt = FALSE;
@@ -492,7 +491,7 @@ void i2cTask() {
 		}
 		break;
 	case ONMPU:
-		if (HAL_I2C_GetState(&hi2c1) == HAL_I2C_STATE_READY) {
+		if (HAL_I2C_GetState(&hi2c2) == HAL_I2C_STATE_READY) {
 			if (mpu6050_Read()) {
 
 				mpu6050_GetData(&ax, &ay, &az, &gx, &gy, &gz);
@@ -514,9 +513,11 @@ void PWM_Control(){
 	  uint32_t rPulse = TIM3CP * rPwm / 100UL;
 
 	__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1,lPulse);
-	__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,lPulse);
-
 	__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3,rPulse);
+
+	lPulse = 0;
+	rPulse = 0;
+	__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,lPulse);
 	__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4,rPulse);
 
 }
@@ -580,12 +581,13 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_ADC1_Init();
-  MX_I2C1_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_USART1_UART_Init();
   MX_USB_DEVICE_Init();
+  MX_I2C2_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
   CDC_Attach_Rx(USBRxData); //Attach a la función que tenia en el .C
 
@@ -600,13 +602,16 @@ int main(void)
 
   	HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET); //Apagamos el LED
 
-  	/*
+
   	//Display
+
   	ssd1306_ADC_ConfCpltCallback(&ssd1306_TxCplt);
   	ssd1306_Attach_MemWrite(displayMemWrite);
   	ssd1306_Attach_MemWriteDMA(displayMemWriteDMA);
   	ssd1306_Init();
-*/
+
+  	//HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+
   	//mpu6050
 
   	mpu6050_ADC_ConfCpltCallback(&mpu6050_RxCplt);
@@ -630,6 +635,9 @@ int main(void)
 
   	//Variables
   	ALLFLAGS = RESET;
+
+  	lPwm = 100;
+  	rPwm = 100;
 
   /* USER CODE END 2 */
 
@@ -744,36 +752,36 @@ static void MX_ADC1_Init(void)
 }
 
 /**
-  * @brief I2C1 Initialization Function
+  * @brief I2C2 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_I2C1_Init(void)
+static void MX_I2C2_Init(void)
 {
 
-  /* USER CODE BEGIN I2C1_Init 0 */
+  /* USER CODE BEGIN I2C2_Init 0 */
 
-  /* USER CODE END I2C1_Init 0 */
+  /* USER CODE END I2C2_Init 0 */
 
-  /* USER CODE BEGIN I2C1_Init 1 */
+  /* USER CODE BEGIN I2C2_Init 1 */
 
-  /* USER CODE END I2C1_Init 1 */
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 400000;
-  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
-  hi2c1.Init.OwnAddress1 = 0;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.ClockSpeed = 400000;
+  hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN I2C1_Init 2 */
+  /* USER CODE BEGIN I2C2_Init 2 */
 
-  /* USER CODE END I2C1_Init 2 */
+  /* USER CODE END I2C2_Init 2 */
 
 }
 
@@ -894,6 +902,7 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 0 */
 
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_SlaveConfigTypeDef sSlaveConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_OC_InitTypeDef sConfigOC = {0};
@@ -902,12 +911,17 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 0;
+  htim3.Init.Prescaler = 71;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 65535;
+  htim3.Init.Period = 9999;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
   {
     Error_Handler();
   }
@@ -951,6 +965,51 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 2 */
   HAL_TIM_MspPostInit(&htim3);
+
+}
+
+/**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 71;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 9999;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
 
 }
 
@@ -1000,12 +1059,12 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel1_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
-  /* DMA1_Channel6_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
-  /* DMA1_Channel7_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
+  /* DMA1_Channel4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
+  /* DMA1_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
 
 }
 
