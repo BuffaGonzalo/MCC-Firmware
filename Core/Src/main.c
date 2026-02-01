@@ -34,6 +34,7 @@
 
 #include <stdio.h>
 #include <unerPrtcl.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -139,8 +140,12 @@ uint8_t IS100 = 0;
 
 uint32_t rPwm, lPwm;
 
+uint8_t hbIndex = 0;
+
 //Wifi
-//_sESP01Handle esp01Handler;
+uint8_t byteUART_ESP01;
+_sESP01Handle esp01Handler;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -236,7 +241,7 @@ void USBTask() {
 	if(USBRx.indexR != USBRx.indexW){
 		uint8_t sendBuffer[TXBUFSIZE];
 
-		if (unerPrtcl_DecodeHeader(&USBRx))
+		if (unerPrtcl_DecodeHeader(&USBRx)){
 			decodeCommand(&USBRx, &USBTx);
 
 		for (uint8_t i = 0; i < USBTx.bytes; i++) { //Paso limpio, error ultima posición
@@ -244,9 +249,12 @@ void USBTask() {
 			USBTx.indexData &= USBTx.mask;
 		}
 
-		CDC_Transmit_FS(sendBuffer, USBTx.bytes);
+		if(ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED)
+			ESP01_Send(sendBuffer, 0, USBTx.bytes, TXBUFSIZE);
+		else
+			CDC_Transmit_FS(sendBuffer, USBTx.bytes);
+		}
 	}
-
 }
 
 void decodeCommand(_sTx *dataRx, _sTx *dataTx) {
@@ -340,7 +348,7 @@ void do10ms() {
 		IS10MS = FALSE;
 		tmo100ms--;
 		tmo20ms--;
-//		ESP01_Timeout10ms();
+		ESP01_Timeout10ms();
 		if (!tmo20ms) {
 			tmo20ms = 2;
 			IS20MS = TRUE;
@@ -362,7 +370,7 @@ void do100ms(){
 void heartBeatTask() {
 	static uint8_t times = 0;
 
-	if (~heartBeatMask[0] & (1 << times)) //Add index
+	if (~heartBeatMask[hbIndex] & (1 << times)) //Add index
 		HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); // Blink LED
 
 	times++;
@@ -438,21 +446,21 @@ void ssd1306Data() {
 	ssd1306_WriteString(data, Font_7x10, Black);
 
 	ssd1306_Line(3, 60, 3,
-			(SSD1306_MINADC - (adcDataTx[0] / 4090) * SSD1306_MAXADC), Black);
+			(SSD1306_MINADC - ((uint32_t)adcDataTx[0] * SSD1306_MAXADC) / 4090), Black);
 	ssd1306_Line(6, 60, 6,
-			(SSD1306_MINADC - (adcDataTx[1] / 4090) * SSD1306_MAXADC), Black);
+			(SSD1306_MINADC - ((uint32_t)adcDataTx[1] * SSD1306_MAXADC) / 4090), Black);
 	ssd1306_Line(9, 60, 9,
-			(SSD1306_MINADC - (adcDataTx[2] / 4090) * SSD1306_MAXADC), Black);
+			(SSD1306_MINADC - ((uint32_t)adcDataTx[2] * SSD1306_MAXADC) / 4090), Black);
 	ssd1306_Line(12, 60, 12,
-			(SSD1306_MINADC - (adcDataTx[3] / 4090) * SSD1306_MAXADC), Black);
+			(SSD1306_MINADC - ((uint32_t)adcDataTx[3] * SSD1306_MAXADC) / 4090), Black);
 	ssd1306_Line(15, 60, 15,
-			(SSD1306_MINADC - (adcDataTx[4] / 4090) * SSD1306_MAXADC), Black);
+			(SSD1306_MINADC - ((uint32_t)adcDataTx[4] * SSD1306_MAXADC) / 4090), Black);
 	ssd1306_Line(18, 60, 18,
-			(SSD1306_MINADC - (adcDataTx[5] / 4090) * SSD1306_MAXADC), Black);
+			(SSD1306_MINADC - ((uint32_t)adcDataTx[5] * SSD1306_MAXADC) / 4090), Black);
 	ssd1306_Line(21, 60, 21,
-			(SSD1306_MINADC - (adcDataTx[6] / 4090) * SSD1306_MAXADC), Black);
+			(SSD1306_MINADC - ((uint32_t)adcDataTx[6] * SSD1306_MAXADC) / 4090), Black);
 	ssd1306_Line(24, 60, 24,
-			(SSD1306_MINADC - (adcDataTx[7] / 4090) * SSD1306_MAXADC), Black);
+			(SSD1306_MINADC - ((uint32_t)adcDataTx[7] * SSD1306_MAXADC) / 4090), Black);
 }
 
 void i2cTask() {
@@ -523,30 +531,44 @@ void PWM_Control(){
 }
 
 
-//void CHPD_Control(uint8_t state)
-//{
-//    /* Assuming CH_PD is on GPIOB Pin 0 */
-//    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, state ? GPIO_PIN_SET : GPIO_PIN_RESET);
-//}
+void CHPD_Control(uint8_t state)
+{
+    /* Assuming CH_PD is on GPIOB Pin 0 */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, state ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
 
 /**
  * @brief  Send one byte out over UART to ESP-01.
  * @param  byte  The data byte to transmit.
  */
-//void USART_SendByte(uint8_t byte)
-//{
-//    /* Assuming huart2 is configured for the ESP01 */
-//    HAL_USART_Transmit(&husart1, &byte, 1, HAL_MAX_DELAY);
-//}
+
+int USART_SendByte(uint8_t byte)
+{
+    /* Assuming huart2 is configured for the ESP01 */
+    if(HAL_UART_Transmit_IT(&huart1, &byte, 1) == HAL_OK)
+    	return 1;
+    else
+    	return 0;
+}
 
 /**
  * @brief  Forward one received byte into the ESP01 driver’s rx buffer.
  * @param  byte  The byte received from UART ISR.
  */
-//void FeedRxBuf(uint8_t byte)
-//{
-//    ESP01_WriteRX(byte);
-//}
+void FeedRxBuf(uint8_t byte)
+{
+    ESP01_WriteRX(byte);
+
+    USBRx.buff[USBRx.indexW++] = byte;
+    USBRx.indexW &= USBRx.mask;
+
+}
+
+
+void DebugESP01_To_USB(const char *msg) {
+    // strlen requiere #include <string.h>
+    CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+}
 
 /* USER CODE END 0 */
 
@@ -602,15 +624,12 @@ int main(void)
 
   	HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET); //Apagamos el LED
 
-
   	//Display
 
   	ssd1306_ADC_ConfCpltCallback(&ssd1306_TxCplt);
   	ssd1306_Attach_MemWrite(displayMemWrite);
   	ssd1306_Attach_MemWriteDMA(displayMemWriteDMA);
   	ssd1306_Init();
-
-  	//HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 
   	//mpu6050
 
@@ -621,14 +640,20 @@ int main(void)
 
   	//esp01
 
-  //	esp01Handler.DoCHPD = CHPD_Control(ON);
-  //	esp01Handler.WriteByteToBufRX = USART_SendByte();
-  //	esp01Handler.WriteUSARTByte = FeedRxBuf(byte);
+  	esp01Handler.DoCHPD = CHPD_Control;
+  	esp01Handler.WriteByteToBufRX = FeedRxBuf;
+ 	esp01Handler.WriteUSARTByte = USART_SendByte;
 
-  	//ESP01_Init(&esp01Handler);
+  	ESP01_Init(&esp01Handler);
+
+  	ESP01_AttachDebugStr(DebugESP01_To_USB);
+
+  	HAL_UART_Receive_IT(&huart1, &byteUART_ESP01, 1); //non blocking
 
   	//ESP01_SetWIFI("FCAL","fcalconcordia.06-2019");
-  	//ESP01_StartUDP("192.168.0.10", 30010, 30001);
+  	//ESP01_SetWIFI("Buffa Family 2.4GHz", "-NixieBulb2022-");
+  	ESP01_SetWIFI("ARPAMOVILE","12345678");
+  	ESP01_StartUDP("192.168.154.68", 30010, 30001);
 
   	//Inicializacion de protocolo
   	unerPrtcl_Init(&USBRx, &USBTx, buffUSBRx, buffUSBTx);
@@ -649,10 +674,17 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 	do10ms();
+	ESP01_Task();
 	USBTask();
+
 	PWM_Control();
 	i2cTask();
 
+
+	if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED) {
+		hbIndex=1;
+	    // El LED o un mensaje en Debug debería indicarte que ya tienes red
+	}
   }
   /* USER CODE END 3 */
 }
@@ -725,12 +757,12 @@ static void MX_ADC1_Init(void)
   /** Common config
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.NbrOfConversion = 8;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
     Error_Handler();
@@ -741,6 +773,69 @@ static void MX_ADC1_Init(void)
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = ADC_REGULAR_RANK_2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_2;
+  sConfig.Rank = ADC_REGULAR_RANK_3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = ADC_REGULAR_RANK_4;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Rank = ADC_REGULAR_RANK_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_5;
+  sConfig.Rank = ADC_REGULAR_RANK_6;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_6;
+  sConfig.Rank = ADC_REGULAR_RANK_7;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_7;
+  sConfig.Rank = ADC_REGULAR_RANK_8;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -1118,7 +1213,18 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    // Verificamos que la interrupción venga del UART1 (ESP01)
+    if (huart->Instance == USART1)
+    {
+        // 1. Alimentamos al driver ESP01
+        FeedRxBuf(byteUART_ESP01);
 
+        // 2. Volvemos a activar la escucha para el siguiente byte
+        HAL_UART_Receive_IT(&huart1, &byteUART_ESP01, 1);
+    }
+}
 /* USER CODE END 4 */
 
 /**
