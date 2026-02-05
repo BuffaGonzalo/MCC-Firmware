@@ -138,7 +138,7 @@ _eDMA myDMA;
 uint8_t tmo100 = 5;
 uint8_t IS100 = 0;
 
-uint32_t rPwm, lPwm;
+uint8_t chnl_1, chnl_2, chnl_3, chnl_4; ////REVISAR CAPAZ QUE SE PUEDE USAR uint8_t
 
 uint8_t hbIndex = 0;
 
@@ -329,12 +329,12 @@ void decodeCommand(_sTx *dataRx, _sTx *dataTx) {
         myWord.ui8[1]=unerPrtcl_GetByteFromRx(dataRx,1,0);
         myWord.ui8[2]=unerPrtcl_GetByteFromRx(dataRx,1,0);
         myWord.ui8[3]=unerPrtcl_GetByteFromRx(dataRx,1,0);
-        lPwm = myWord.i32;
+        chnl_1 = myWord.i32;
         myWord.ui8[0]=unerPrtcl_GetByteFromRx(dataRx,1,0);
         myWord.ui8[1]=unerPrtcl_GetByteFromRx(dataRx,1,0);
         myWord.ui8[2]=unerPrtcl_GetByteFromRx(dataRx,1,0);
         myWord.ui8[3]=unerPrtcl_GetByteFromRx(dataRx,1,0);
-        rPwm = myWord.i32;
+        chnl_2 = myWord.i32;
 		break;
 	default:
 		unerPrtcl_PutHeaderOnTx(dataTx, (_eCmd) dataRx->buff[dataRx->indexData], 2);
@@ -547,17 +547,35 @@ void i2cTask() {
 
 void PWM_Control(){
 
+	// +-------------------------------------------------------+
+	// | TABLA DE ESTADOS - CONTROLADOR L9110S                 |
+	// +------------+------------+--------------+--------------+
+	// | Entrada IA | Entrada IB | Salida Motor | Estado       |
+	// +------------+------------+--------------+--------------+
+	// |    LOW     |    LOW     |     OFF      | Frenado/Stop |
+	// |    HIGH    |    LOW     |    AVANCE    | Giro Horario |
+	// |    LOW     |    HIGH    |  RETROCESO   | Giro Antihor.|
+	// |    HIGH    |    HIGH    |     OFF      | Frenado/Stop |
+	// +------------+------------+--------------+--------------+
+	// | * Nota: Las salidas quedan en estado "flotante" si las |
+	// |   entradas son iguales (ambas HIGH o ambas LOW).      |
+	// +-------------------------------------------------------+
+
 	  // Calcula CCRx = period * percent / 100
-	  uint32_t lPulse = TIM3CP * lPwm / 100UL;
-	  uint32_t rPulse = TIM3CP * rPwm / 100UL;
+	  uint16_t lPulse1  = TIM3CP * chnl_1 / 100UL;
+	  uint16_t lPulse3 = TIM3CP * chnl_3 / 100UL;
 
-	__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1,lPulse);
-	__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3,rPulse);
+	  uint16_t rPulse2 = TIM3CP * chnl_2 / 100UL;
+	  uint16_t rPulse4 = TIM3CP * chnl_4 / 100UL;
 
-	lPulse = 0;
-	rPulse = 0;
-	__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,lPulse);
-	__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4,rPulse);
+
+	//Rueda izquierda
+	__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1,lPulse1);
+	__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3,lPulse3);
+
+	//Rueda derecha
+	__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,rPulse2);
+	__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4,rPulse4);
 
 }
 
@@ -697,9 +715,12 @@ int main(void)
 
   	//Variables
   	ALLFLAGS = RESET;
-
-  	lPwm = 100;
-  	rPwm = 100;
+  	//reversa
+  	chnl_1=5;
+  	chnl_3=5;
+  	//adelante
+  	chnl_2=0;
+  	chnl_4=0;
 
   /* USER CODE END 2 */
 
