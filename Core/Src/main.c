@@ -143,6 +143,7 @@ uint32_t rPwm, lPwm;
 uint8_t hbIndex = 0;
 
 //Wifi
+uint8_t timerUDP = 0;
 uint8_t byteUART_ESP01;
 _sESP01Handle esp01Handler;
 
@@ -344,19 +345,49 @@ void decodeCommand(_sTx *dataRx, _sTx *dataTx) {
 }
 
 void do10ms() {
+
 	if (IS10MS) {
 		IS10MS = FALSE;
 		tmo100ms--;
 		tmo20ms--;
 		ESP01_Timeout10ms();
+
 		if (!tmo20ms) {
 			tmo20ms = 2;
 			IS20MS = TRUE;
 		}
 		if (!tmo100ms) {
 			tmo100ms = 10;
+
+			timerUDP++;
+			if(timerUDP>=10){
+				timerUDP=0;
+
+				// Preparamos un paquete ALIVE (0xF0)
+				_sTx paqueteAlive;
+				uint8_t bufferTx[32];
+
+				// Armamos cabecera UNER
+				unerPrtcl_PutHeaderOnTx(&paqueteAlive, ALIVE, 1);
+				// Ponemos un dato dummy (ej. 0x00)
+				unerPrtcl_PutByteOnTx(&paqueteAlive, 0x00);
+				// Checksum
+				unerPrtcl_PutByteOnTx(&paqueteAlive, paqueteAlive.chk);
+
+				// Pasamos el paquete a un buffer lineal
+				for(int i=0; i<paqueteAlive.bytes; i++){
+					bufferTx[i] = paqueteAlive.buff[paqueteAlive.indexData++];
+					paqueteAlive.indexData &= paqueteAlive.mask;
+				}
+
+				// Enviamos el saludo a la IP de la PC (Configurada en el Init)
+				ESP01_Send(bufferTx, 0, paqueteAlive.bytes, 100);
+
+			}
+
 			IS100MS = TRUE;
 			heartBeatTask();
+
 		}
 	}
 }
@@ -558,10 +589,6 @@ int USART_SendByte(uint8_t byte)
 void FeedRxBuf(uint8_t byte)
 {
     ESP01_WriteRX(byte);
-
-    USBRx.buff[USBRx.indexW++] = byte;
-    USBRx.indexW &= USBRx.mask;
-
 }
 
 
@@ -569,6 +596,16 @@ void DebugESP01_To_USB(const char *msg) {
     // strlen requiere #include <string.h>
     CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
 }
+
+
+// Esta función la llama el driver cuando tiene un byte de datos UDP limpio
+void WiFi_Data_Callback(uint8_t byte)
+{
+    // AQUÍ guardamos el dato en tu estructura de protocolo para que USBTask lo procese
+    USBRx.buff[USBRx.indexW++] = byte;
+    USBRx.indexW &= USBRx.mask;
+}
+
 
 /* USER CODE END 0 */
 
@@ -641,8 +678,8 @@ int main(void)
   	//esp01
 
   	esp01Handler.DoCHPD = CHPD_Control;
-  	esp01Handler.WriteByteToBufRX = FeedRxBuf;
  	esp01Handler.WriteUSARTByte = USART_SendByte;
+ 	esp01Handler.WriteByteToBufRX = WiFi_Data_Callback;
 
   	ESP01_Init(&esp01Handler);
 
@@ -680,11 +717,6 @@ int main(void)
 	PWM_Control();
 	i2cTask();
 
-
-	if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED) {
-		hbIndex=1;
-	    // El LED o un mensaje en Debug debería indicarte que ya tienes red
-	}
   }
   /* USER CODE END 3 */
 }
