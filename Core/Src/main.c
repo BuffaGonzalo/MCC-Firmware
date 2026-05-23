@@ -98,7 +98,7 @@
 
 ////seguidor de linea
 #define SCALE_LINE			1000
-#define LINE_THRESHOLD		1500//1800
+#define LINE_THRESHOLD		1250//1800
 #define IR_WHITE			1500  // Lectura ADC base sobre superficie blanca (~1800-2000)
 #define LINE_LOST_PHASE0  	35
 #define LINE_LOST_PHASE1  	70
@@ -200,6 +200,10 @@ uint16_t rPulse4 = 0;
 
 uint8_t hbIndex = 0;
 
+volatile uint8_t displayScreen = 0;
+volatile int32_t speed = 0;
+volatile int32_t dynamic_accel = 0;
+
 //Wifi
 uint8_t timerUDP = 0;
 uint8_t udpSilenceCounter = 5; // Comienza en 5 para enviar ALIVEs desde el arranque. Se resetea al recibir comandos WiFi.
@@ -251,6 +255,7 @@ int32_t derivative = 0;
 int32_t integral = 0;
 int32_t output = 0;
 int32_t current_angle = 0; // Escala x100 (ej: 150 = 1.5 grados)
+int32_t measured_dt_ms = 20; // Delta de tiempo dinámico medido en ms
 //filtros de acc
 int32_t ax_filt = 0;
 int32_t az_filt = 0;
@@ -273,8 +278,8 @@ int16_t offset_right = 0; //70
 int32_t setpoint = 50; // Setpoint estatico, angulo unico de trabajo (x100 = 0.5°), ajustable por SETLINECTRL
 
 // Variables del Control de Línea
-int16_t Kp_line = 125; // Proporcional para reacción del volante (60 es un buen inicio)
-int16_t Kq_line = 25; // Derivativo para suavizar el giro y evitar oscilaciones
+int16_t Kp_line = 250; // Proporcional para reacción del volante (60 es un buen inicio)
+int16_t Kq_line = 15; // Derivativo para suavizar el giro y evitar oscilaciones
 int32_t sum_sensors = 0;
 int32_t error_linea = 0;
 int32_t abs_error = 0;
@@ -284,7 +289,7 @@ int32_t turn_offset = 0;
 int32_t last_line_error = 0;
 // Variables escaladas (custom_turn maneja valores escalados x100)
 int16_t custom_turn = 1; // 15000 / 100 = 150 de PWM real para giro en búsqueda
-int16_t attack_setpoint = -1000; // Inclinación de 2.0° para un avance muy sutil
+int16_t attack_setpoint = -1050; // Inclinación de 2.0° para un avance muy sutil
 int16_t brake_angle_div = 4; //Valor menor aumenta la velocidad en curvas
 int32_t angle_limit = 2000;  // Límite de inclinación (x100 = 20.00°)
 int16_t turn_divisor = 8;    // Divisor para el cálculo de turn_offset
@@ -293,6 +298,12 @@ int16_t save_max = 2000;        // Anti-collapse fallback setpoint (forward reco
 
 int16_t vel_damp_div = 500;
 int16_t vel_damp_limit = 100;
+int16_t turn_limit = 1000;
+//Control de velocidad
+int32_t vel_estimate  = 0;
+int16_t vel_decay     = 98;
+int16_t vel_setpoint_gain = 10;
+int16_t vel_limit     = 500;
 
 // Ángulos usando enteros de 8 bits (0 a 255 representa un giro completo)
 uint8_t angle_x = 0;
@@ -663,7 +674,7 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		break;
 	case GETINTERNALDATA:
 		// Estructura simplificada para sincronización de parámetros (60 bytes de datos + 1 chk)
-		unerPrtcl_PutHeaderOnTx(dataTx, GETINTERNALDATA, 65);
+		unerPrtcl_PutHeaderOnTx(dataTx, GETINTERNALDATA, 67);
 
 		// 1. Bloque PID Balancín (10 bytes: Kp, Ki, Kd, Max, Min)
 		int16_t pid_bal[5] = { Kp_stable, Ki_stable, Kd_stable, (int16_t)minPWM_Right, (int16_t)minPWM_Left};
@@ -726,16 +737,20 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((damp_params[i] >> 8) & 0xFF));
 		}
 
+		// 10. Turn Limit (2 bytes: turn_limit)
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (turn_limit & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((turn_limit >> 8) & 0xFF));
+
 		// Checksum final
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
 		break;
 	case GETPIDBALANCE:
-			// Tamaño: 1(cmd) + 5 variables * 4 bytes = 21 bytes
-			unerPrtcl_PutHeaderOnTx(dataTx, GETPIDBALANCE, 21);
+			// Tamaño: 1(cmd) + 7 variables * 4 bytes = 29 bytes
+			unerPrtcl_PutHeaderOnTx(dataTx, GETPIDBALANCE, 29);
 
-			int32_t pid_telemetry[5] = { error, integral, derivative, output, current_angle };
+			int32_t pid_telemetry[7] = { error, integral, derivative, output, current_angle, turn_offset, measured_dt_ms };
 
-			for (int i = 0; i < 5; i++) {
+			for (int i = 0; i < 7; i++) {
 				unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (pid_telemetry[i] & 0xFF));
 				unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((pid_telemetry[i] >> 8) & 0xFF));
 				unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((pid_telemetry[i] >> 16) & 0xFF));
@@ -904,6 +919,14 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		vel_damp_limit = myWord.i16[0];
 		break;
+	case SETTURNLIMIT:
+		unerPrtcl_PutHeaderOnTx(dataTx, SETTURNLIMIT, 2);
+		unerPrtcl_PutByteOnTx(dataTx, ACK);
+		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
+		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
+		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
+		turn_limit = myWord.i16[0];
+		break;
 	default:
 		unerPrtcl_PutHeaderOnTx(dataTx, (_eCmd) dataRx->buff[dataRx->indexData],
 				2);
@@ -1020,73 +1043,119 @@ void mpuMemReadDMA(uint8_t address, uint8_t *data, uint8_t size, uint8_t type){
 }
 
 void ssd1306Data() {
-	char data[8];
+	char data[32];
 	uint8_t y = 0, x = 2;
 
-	ssd1306_Fill(White);
+	if (displayScreen == 0) {
+		ssd1306_Fill(White);
 
-	ssd1306_FillRectangle(30, 0, 32, 64, Black);
+		ssd1306_FillRectangle(30, 0, 32, 64, Black);
 
-	ssd1306_FillRectangle(0, 20, 128, 22, Black);
+		ssd1306_FillRectangle(0, 20, 128, 22, Black);
 
-	ssd1306_FillRectangle(80, 0, 82, 64, Black);
+		ssd1306_FillRectangle(80, 0, 82, 64, Black);
 
-	x = SSD1306_SNDCOL;
-	y = 0;
-	ssd1306_SetCursor(x, y);
-	snprintf(data, sizeof(data), "ACC");
-	ssd1306_WriteString(data, Font_11x18, Black);
-	x = SSD1306_TRDCOL;
-	ssd1306_SetCursor(x, y);
-	snprintf(data, sizeof(data), "GYR");
-	ssd1306_WriteString(data, Font_11x18, Black);
+		x = SSD1306_SNDCOL;
+		y = 0;
+		ssd1306_SetCursor(x, y);
+		snprintf(data, sizeof(data), "ACC");
+		ssd1306_WriteString(data, Font_11x18, Black);
+		x = SSD1306_TRDCOL;
+		ssd1306_SetCursor(x, y);
+		snprintf(data, sizeof(data), "GYR");
+		ssd1306_WriteString(data, Font_11x18, Black);
 
-	x = SSD1306_SNDCOL;
-	y += 25;
-	ssd1306_SetCursor(x, y);
-	snprintf(data, sizeof(data), "%d", ax);
-	ssd1306_WriteString(data, Font_7x10, Black);
-	x = SSD1306_TRDCOL;
-	ssd1306_SetCursor(x, y);
-	snprintf(data, sizeof(data), "%d", gx);
-	ssd1306_WriteString(data, Font_7x10, Black);
+		x = SSD1306_SNDCOL;
+		y += 25;
+		ssd1306_SetCursor(x, y);
+		snprintf(data, sizeof(data), "%d", ax);
+		ssd1306_WriteString(data, Font_7x10, (SSD1306_COLOR)Black);
+		x = SSD1306_TRDCOL;
+		ssd1306_SetCursor(x, y);
+		snprintf(data, sizeof(data), "%d", gx);
+		ssd1306_WriteString(data, Font_7x10, (SSD1306_COLOR)Black);
 
-	x = SSD1306_SNDCOL;
-	y += 12;
-	ssd1306_SetCursor(x, y);
-	snprintf(data, sizeof(data), "%d", ay);
-	ssd1306_WriteString(data, Font_7x10, Black);
-	x = SSD1306_TRDCOL;
-	ssd1306_SetCursor(x, y);
-	snprintf(data, sizeof(data), "%d", gy);
-	ssd1306_WriteString(data, Font_7x10, Black);
+		x = SSD1306_SNDCOL;
+		y += 12;
+		ssd1306_SetCursor(x, y);
+		snprintf(data, sizeof(data), "%d", ay);
+		ssd1306_WriteString(data, Font_7x10, (SSD1306_COLOR)Black);
+		x = SSD1306_TRDCOL;
+		ssd1306_SetCursor(x, y);
+		snprintf(data, sizeof(data), "%d", gy);
+		ssd1306_WriteString(data, Font_7x10, (SSD1306_COLOR)Black);
 
-	x = SSD1306_SNDCOL;
-	y += 12;
-	ssd1306_SetCursor(x, y);
-	snprintf(data, sizeof(data), "%d", az);
-	ssd1306_WriteString(data, Font_7x10, Black);
-	x = SSD1306_TRDCOL;
-	ssd1306_SetCursor(x, y);
-	snprintf(data, sizeof(data), "%d", gz);
-	ssd1306_WriteString(data, Font_7x10, Black);
+		x = SSD1306_SNDCOL;
+		y += 12;
+		ssd1306_SetCursor(x, y);
+		snprintf(data, sizeof(data), "%d", az);
+		ssd1306_WriteString(data, Font_7x10, (SSD1306_COLOR)Black);
+		x = SSD1306_TRDCOL;
+		ssd1306_SetCursor(x, y);
+		snprintf(data, sizeof(data), "%d", gz);
+		ssd1306_WriteString(data, Font_7x10, (SSD1306_COLOR)Black);
 
-	ssd1306_Line(3, 60, 3,
-			(SSD1306_MINADC - ((uint32_t)adcDataTx[0] * SSD1306_MAXADC) / 4090), Black);
-	ssd1306_Line(6, 60, 6,
-			(SSD1306_MINADC - ((uint32_t)adcDataTx[1] * SSD1306_MAXADC) / 4090), Black);
-	ssd1306_Line(9, 60, 9,
-			(SSD1306_MINADC - ((uint32_t)adcDataTx[2] * SSD1306_MAXADC) / 4090), Black);
-	ssd1306_Line(12, 60, 12,
-			(SSD1306_MINADC - ((uint32_t)adcDataTx[3] * SSD1306_MAXADC) / 4090), Black);
-	ssd1306_Line(15, 60, 15,
-			(SSD1306_MINADC - ((uint32_t)adcDataTx[4] * SSD1306_MAXADC) / 4090), Black);
-	ssd1306_Line(18, 60, 18,
-			(SSD1306_MINADC - ((uint32_t)adcDataTx[5] * SSD1306_MAXADC) / 4090), Black);
-	ssd1306_Line(21, 60, 21,
-			(SSD1306_MINADC - ((uint32_t)adcDataTx[6] * SSD1306_MAXADC) / 4090), Black);
-	ssd1306_Line(24, 60, 24,
-			(SSD1306_MINADC - ((uint32_t)adcDataTx[7] * SSD1306_MAXADC) / 4090), Black);
+		ssd1306_Line(3, 60, 3,
+				(SSD1306_MINADC - ((uint32_t)adcDataTx[0] * SSD1306_MAXADC) / 4090), (SSD1306_COLOR)Black);
+		ssd1306_Line(6, 60, 6,
+				(SSD1306_MINADC - ((uint32_t)adcDataTx[1] * SSD1306_MAXADC) / 4090), (SSD1306_COLOR)Black);
+		ssd1306_Line(9, 60, 9,
+				(SSD1306_MINADC - ((uint32_t)adcDataTx[2] * SSD1306_MAXADC) / 4090), (SSD1306_COLOR)Black);
+		ssd1306_Line(12, 60, 12,
+				(SSD1306_MINADC - ((uint32_t)adcDataTx[3] * SSD1306_MAXADC) / 4090), (SSD1306_COLOR)Black);
+		ssd1306_Line(15, 60, 15,
+				(SSD1306_MINADC - ((uint32_t)adcDataTx[4] * SSD1306_MAXADC) / 4090), (SSD1306_COLOR)Black);
+		ssd1306_Line(18, 60, 18,
+				(SSD1306_MINADC - ((uint32_t)adcDataTx[5] * SSD1306_MAXADC) / 4090), (SSD1306_COLOR)Black);
+		ssd1306_Line(21, 60, 21,
+				(SSD1306_MINADC - ((uint32_t)adcDataTx[6] * SSD1306_MAXADC) / 4090), (SSD1306_COLOR)Black);
+		ssd1306_Line(24, 60, 24,
+				(SSD1306_MINADC - ((uint32_t)adcDataTx[7] * SSD1306_MAXADC) / 4090), (SSD1306_COLOR)Black);
+	} else {
+		// New Screen: premium dark mode
+		ssd1306_Fill(Black);
+
+		// Row 1: VEL: <speed> mm/s (speed is integrated in mm/s)
+		ssd1306_SetCursor(2, 2);
+		ssd1306_WriteString("VEL:", Font_7x10, White);
+		ssd1306_SetCursor(36, 2);
+		snprintf(data, sizeof(data), "%ld mm/s", speed);
+		ssd1306_WriteString(data, Font_7x10, White);
+
+		// Row 2: ACL: <dynamic_accel * 3 / 5> mm/s2 (dynamic_accel is in LSB, 1 LSB ≈ 0.6 mm/s2)
+		ssd1306_SetCursor(2, 17);
+		ssd1306_WriteString("ACL:", Font_7x10, White);
+		ssd1306_SetCursor(36, 17);
+		snprintf(data, sizeof(data), "%ld mm/s2", (dynamic_accel * 3) / 5);
+		ssd1306_WriteString(data, Font_7x10, White);
+
+		// Row 3: ANG: <current_angle / 100>.<abs(current_angle % 100)>
+		ssd1306_SetCursor(2, 32);
+		ssd1306_WriteString("ANG:", Font_7x10, White);
+		ssd1306_SetCursor(36, 32);
+		int32_t ang_whole = current_angle / 100;
+		int32_t ang_frac = current_angle % 100;
+		if (ang_frac < 0) {
+			ang_frac = -ang_frac;
+		}
+		snprintf(data, sizeof(data), "%ld.%02ld", ang_whole, ang_frac);
+		ssd1306_WriteString(data, Font_7x10, White);
+
+		// Row 4: LIN: <SIGUE LINEA / NO SIGUE>
+		ssd1306_SetCursor(2, 47);
+		ssd1306_WriteString("LIN:", Font_7x10, White);
+		ssd1306_SetCursor(36, 47);
+		if (lineState == LINE_FOLLOWING) {
+			ssd1306_WriteString("SIGUE LINEA", Font_7x10, White);
+		} else {
+			ssd1306_WriteString("NO SIGUE", Font_7x10, White);
+		}
+
+		// Horizontal dividing lines in White
+		ssd1306_Line(0, 14, 127, 14, White);
+		ssd1306_Line(0, 29, 127, 29, White);
+		ssd1306_Line(0, 44, 127, 44, White);
+	}
 }
 
 void i2cTask() {
@@ -1529,10 +1598,12 @@ void buttonTimeout10ms(_sButton *button){
 void buttonTask(_sButton *button){
 	if((!button->isPressed) && (button->time > T100MS) && (button->time<T1000MS)){
 		hbIndex = 1;
+		displayScreen = !displayScreen; // Alterna la pantalla
 		button->time = 0; //limpiamos el valor para que no pueda volver a entrar en esta parte
 	}
 	if((!button->isPressed) && (button->time > T1000MS)){
 		hbIndex = 0;
+		displayScreen = !displayScreen; // Alterna la pantalla
 		button->time = 0;
 	}
 }
@@ -1541,6 +1612,23 @@ void PID_ControlTask(void) {
 	if (RUN_PID == FALSE)
 		return;
 	RUN_PID = FALSE;
+
+	// Medición del delta-time real de ejecución mediante hardware de alta resolución
+	static uint32_t last_cycle_time = 0;
+	uint32_t current_cycle_time = DWT->CYCCNT;
+	uint32_t dt_us = 20000; // Por defecto nominal de 20ms en el primer ciclo
+
+	if (last_cycle_time != 0) {
+		dt_us = (current_cycle_time - last_cycle_time) / 72; // CPU corre a 72MHz
+	}
+	last_cycle_time = current_cycle_time;
+
+	// Filtro de seguridad por si ocurre algún reset de contador o retardo inusual en el arranque
+	if (dt_us < 1000 || dt_us > 100000) {
+		dt_us = 20000;
+	}
+
+	measured_dt_ms = (int32_t)(dt_us / 1000);
 
 	// =========================================================
 	// --- 1. LECTURA E INVERSIÓN DE SENSORES DE LÍNEA ---
@@ -1610,50 +1698,106 @@ void PID_ControlTask(void) {
 		break;
 
 	case LINE_FOLLOWING:
-		if (active_count == 3 && ir1_active && ir3_active && ir5_active) {
-			lineState = LINE_CROSS;
-			break;
-		}
-
-		if (active_count == 0) {
-			line_lost_timer = 0;
-			line_lost_phase = 0;
-			lineState = LINE_LOST;
-			break;
-		}
-
-		error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors)
-				/ 10;
-		abs_error = (error_linea > 0) ? error_linea : -error_linea;
-
-		linear_term = Kp_line * error_linea;
-		quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
-
-		if (turn_divisor == 0) turn_divisor = 1; //Sistema de Seguridad para evitar divisiones por 0
-		turn_offset = (linear_term + quad_term) / turn_divisor;
-
-		{
-			// --- CONTROL DE VELOCIDAD PURO EN CURVAS ---
-			int32_t abs_turn = (turn_offset > 0) ? turn_offset : -turn_offset;
-			int32_t curve_brake = 0;
-
-			if (brake_angle_div != 0) {
-				curve_brake = abs_turn / brake_angle_div;
+			if (active_count == 3 && ir1_active && ir3_active && ir5_active) {
+				lineState = LINE_CROSS;
+				break;
 			}
 
-			// Inclinación base (velocidad) menos el contrasetpoint de frenado
-			target_setpoint = attack_setpoint + curve_brake;
+			if (active_count == 0) {
+				line_lost_timer = 0;
+				line_lost_phase = 0;
+				lineState = LINE_LOST;
+				break;
+			}
 
-			// Límites de inclinación operativa
-			if (target_setpoint > ANG10)
-				target_setpoint = ANG10;
-			if (target_setpoint < -ANG10)
-				target_setpoint = -ANG10;
-		}
+			error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors)
+					/ 10;
+			abs_error = (error_linea > 0) ? error_linea : -error_linea;
 
-		last_line_error = error_linea;
-		break;
+			linear_term = Kp_line * error_linea;
+			quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
 
+			if (turn_divisor == 0) turn_divisor = 1; // Sistema de Seguridad
+			turn_offset = (linear_term + quad_term) / turn_divisor;
+
+			if (turn_offset > turn_limit) {
+				turn_offset = turn_limit;
+			} else if (turn_offset < -turn_limit) {
+				turn_offset = -turn_limit;
+			}
+
+			// --- ESTIMACIÓN DE VELOCIDAD CON COMPENSACIÓN DE GRAVEDAD ---
+			int32_t ax_fast = (ax * 20 + ax_filt * 80) / 100;
+			int32_t gravity_x = (current_angle_hr * 16384) / 573000;
+			int32_t ax_clean  = ax_fast - gravity_x;
+
+			vel_estimate = (vel_estimate * vel_decay) / 100 + ax_clean;
+
+			if (vel_estimate >  vel_limit) vel_estimate =  vel_limit;
+			if (vel_estimate < -vel_limit) vel_estimate = -vel_limit;
+
+			int32_t vel_correction = -(vel_estimate * vel_setpoint_gain) / 1000;
+			if (vel_correction >  vel_limit) vel_correction =  vel_limit;
+			if (vel_correction < -vel_limit) vel_correction = -vel_limit;
+
+
+			{
+				// =========================================================
+				// --- VARIABLES DEL LIMITADOR DE VELOCIDAD ---
+				// (Al ser static, conservan su valor en cada ciclo del PID)
+				// ========================	================================
+				static uint16_t speed_timer_ms = 0;
+				static uint8_t is_speed_braking = 0;
+				static uint8_t brake_cycles = 0;
+
+				// --- CONTROL DE VELOCIDAD PURO EN CURVAS ---
+				int32_t abs_turn = (turn_offset > 0) ? turn_offset : -turn_offset;
+				int32_t curve_brake = 0;
+
+				if (brake_angle_div != 0) {
+					curve_brake = abs_turn / brake_angle_div;
+				}
+
+				// CORRECCIÓN: Como attack_setpoint es NEGATIVO, para frenar
+				// debemos SUMAR el curve_brake para que se acerque a 0.
+				target_setpoint = attack_setpoint + curve_brake;
+				target_setpoint += vel_correction;
+
+				// =========================================================
+				// --- NUEVA LÓGICA: FRENO PULSADO POR TIEMPO E INCLINACIÓN ---
+				// =========================================================
+				speed_timer_ms += dt_us / 1000; // Sumamos los milisegundos reales transcurridos
+
+				// Condición 1: El ángulo superó los -1200 (se está cayendo muy de cara)
+				// Condición 2: Pasaron 500 ms de aceleración ininterrumpida
+				if (current_angle < -1200 || speed_timer_ms >= 500) {
+					is_speed_braking = 1;
+					brake_cycles = 5; // Mantiene el freno por 5 ciclos (100 ms) para cortar la inercia
+					speed_timer_ms = 0; // Reiniciamos el reloj para los próximos 500ms
+				}
+
+				// Aplicación efectiva del freno
+				if (is_speed_braking) {
+					// Forzamos el setpoint al punto de equilibrio estático.
+					// Al pedirle que se quede "quieto" (ej: 50), el PID tirará el chasis
+					// fuertemente hacia atrás, absorbiendo toda la velocidad excedente.
+					target_setpoint = 200;
+
+					brake_cycles--;
+					if (brake_cycles == 0) {
+						is_speed_braking = 0; // Termina el frenado, vuelve a acelerar
+					}
+				}
+
+				// --- LÍMITES DE SEGURIDAD FINAL ---
+				if (target_setpoint > ANG10)
+					target_setpoint = ANG10;
+				if (target_setpoint < -ANG10)
+					target_setpoint = -ANG10;
+			}
+
+			last_line_error = error_linea;
+			break;
 	case LINE_LOST:
 		if (ir3_active) {
 			lineState = LINE_FOLLOWING;
@@ -1720,14 +1864,14 @@ void PID_ControlTask(void) {
 	}
 
 	error = target_setpoint - current_angle;
-	derivative = ((error - last_error) * 1000) / DT_MS;
+	derivative = (int32_t)(((int64_t)(error - last_error) * 1000000LL) / dt_us);
 
 	if (error > -150 && error < 150) {
-		integral += error * DT_MS;
-		if (integral > (ANG20 * DT_MS))
-			integral = (ANG20 * DT_MS);
-		if (integral < -(ANG20 * DT_MS))
-			integral = -(ANG20 * DT_MS);
+		integral += (error * (int32_t)dt_us) / 1000;
+		if (integral > (ANG20 * 20))
+			integral = (ANG20 * 20);
+		if (integral < -(ANG20 * 20))
+			integral = -(ANG20 * 20);
 	} else {
 		integral = (integral * 8) / 10;
 	}
@@ -1780,8 +1924,113 @@ void PID_ControlTask(void) {
 		}
 	}
 
+	// Integración de velocidad usando acelerómetro MPU6050 y compensación de gravedad
+	// 1g = 16384 LSB. 1 grado = 16384 * sin(1°) ≈ 286 LSB.
+	// current_angle está en grados * 100.
+	static uint16_t calib_cycle = 0;
+	static int32_t ax_calib_sum = 0;
+	static int16_t ax_offset = 0;
+	static int32_t last_gz_filt = 0;
+	static int32_t gx_filt = 0, gy_filt = 0, gz_filt = 0;
+	static int32_t ax_tele_filt = 0;
+
+	// Filtro pasa-bajos para el giroscopio para eliminar ruido de vibración de alta frecuencia (motores)
+	if (gx_filt == 0 && gy_filt == 0 && gz_filt == 0) {
+		gx_filt = gx;
+		gy_filt = gy;
+		gz_filt = gz;
+	} else {
+		gx_filt = (gx * 10 + gx_filt * 90) / 100;
+		gy_filt = (gy * 10 + gy_filt * 90) / 100;
+		gz_filt = (gz * 10 + gz_filt * 90) / 100;
+	}
+
+	// Filtro pasa-bajos rápido de baja latencia para la telemetría (20ms constante de tiempo)
+	// Evita el desfase temporal con la gravedad compensada que causaba falsas integraciones
+	if (ax_tele_filt == 0) {
+		ax_tele_filt = ax;
+	} else {
+		ax_tele_filt = (ax * 50 + ax_tele_filt * 50) / 100;
+	}
+
+	int32_t ang = current_angle;
+	int32_t linear_part = (ang * 286) / 100;
+	int64_t ang64 = ang;
+	int32_t cubic_part = (int32_t)((ang64 * ang64 * ang64) / 68880962LL);
+	int32_t gravity_comp = linear_part - cubic_part;
+
+	if (calib_cycle < 150) {
+		// Durante la fase de estabilización inicial (primeros 40 ciclos / 800ms)
+		// forzamos al filtro y al ángulo complementario a acoplarse de forma instantánea
+		// al valor real de los sensores para eliminar el retardo (lag) de arranque.
+		if (calib_cycle < 40) {
+			ax_filt = ax;
+			az_filt = az;
+			gx_filt = gx;
+			gy_filt = gy;
+			gz_filt = gz;
+			last_gz_filt = gz;
+			current_angle_hr = (int32_t)ax_filt * 35;
+			current_angle = current_angle_hr / 100;
+			ang = current_angle;
+			linear_part = (ang * 286) / 100;
+			ang64 = ang;
+			cubic_part = (int32_t)((ang64 * ang64 * ang64) / 68880962LL);
+			gravity_comp = linear_part - cubic_part;
+			ax_tele_filt = ax;
+		}
+
+		// Calibración automática durante los primeros 3 segundos de encendido (150 ciclos de 20ms)
+		// Esperamos 50 ciclos para que el filtro ax_filt se estabilice tras arrancar.
+		if (calib_cycle >= 50) {
+			ax_calib_sum += (ax_tele_filt - gravity_comp);
+		}
+		calib_cycle++;
+		if (calib_cycle == 150) {
+			ax_offset = ax_calib_sum / 100;
+		}
+		dynamic_accel = 0;
+		speed = 0;
+		last_gz_filt = gz_filt;
+	} else {
+		// Velocidades angulares filtradas en LSB
+		int32_t rot_Y_sq = (int32_t)gy_filt * gy_filt; // Cabeceo^2
+		int32_t rot_Z_sq = (int32_t)gz_filt * gz_filt; // Guiñada^2
+		int32_t rot_XY   = (int32_t)gx_filt * gy_filt; // Acoplamiento balanceo-cabeceo
+
+		// Aceleración angular en Z (Derivada del giro filtrado en Z por paso de tiempo)
+		int32_t alpha_z = gz_filt - last_gz_filt;
+		last_gz_filt = gz_filt;
+
+		// Compensación de Fuerzas Parásitas por Desplazamiento del sensor (Frente = 1.5 cm, Izquierda = 1.5 cm)
+		// Divisores calibrados usando las distancias físicas reales del robot del usuario
+		int32_t rx_centrifugal = (rot_Y_sq + rot_Z_sq) / 2249000;
+		int32_t ry_centrifugal = rot_XY / 2249000;
+		int32_t ry_tangential  = alpha_z / 6;
+
+		// Operación normal: Sustraemos la gravedad (corregida con signo -), el offset estático y los componentes parásitos tridimensionales
+		dynamic_accel = ax_tele_filt - ax_offset - gravity_comp - rx_centrifugal + ry_centrifugal + ry_tangential;
+
+		// Puerta de ruido (deadband fino) para evitar micro-derivas acumulativas por vibración remanente de los motores
+		int32_t accel_for_integration = dynamic_accel;
+		if (accel_for_integration > -1300 && accel_for_integration < 1300) {
+			accel_for_integration = 0;
+		}
+
+		// Integración física en mm/s (con DT_MS = 20ms)
+		speed = (speed * 98) / 100 + (int32_t)(((int64_t)accel_for_integration * dt_us * 3LL) / 5000000LL);
+	}
+
 	// Apagado de emergencia por caída estructural
 	if (current_angle > ANG45 || current_angle < -ANG45) {
+		pwm_left = 0;
+		pwm_right = 0;
+		integral = 0;
+		speed = 0; // Reset de velocidad al caer
+	}
+
+	// Silenciado de motores durante los primeros 3 segundos (150 ciclos) para calibración estática sin vibración
+	if (calib_cycle < 150) {
 		pwm_left = 0;
 		pwm_right = 0;
 		integral = 0;
@@ -1934,6 +2183,11 @@ int main(void)
 
     //INICIALIZAMOS BOTONES
     initButton(&myButton);
+
+    // Habilitar contador de ciclos DWT para medición inercial de alta resolución (microsegundos)
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
   /* USER CODE END 2 */
 
   /* Infinite loop */

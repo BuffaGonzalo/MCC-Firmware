@@ -1,6 +1,6 @@
 ../Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_uart.c:3335:13:UART_EndRxTransfer	0	static,ignoring_inline_asm
 ../Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_uart.c:3695:13:UART_SetConfig	8	static
-../Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_uart.c:3185:26:UART_WaitOnFlagUntilTimeout	40	static
+../Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_uart.c:3185:26:UART_WaitOnFlagUntilTimeout	32	static
 ../Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_uart.c:718:13:HAL_UART_MspInit	0	static
 ../Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_uart.c:354:19:HAL_UART_Init	8	static
 ../Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_uart.c:432:19:HAL_HalfDuplex_Init	8	static

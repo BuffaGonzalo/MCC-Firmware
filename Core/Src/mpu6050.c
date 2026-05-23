@@ -61,7 +61,7 @@ void mpu6050_Init(void)
     //HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, PWR_MGMT_1_REG, 1, &data, 1, HAL_MAX_DELAY);
     mpu6050_WriteData(&data, PWR_MGMT_1_REG);
 
-    // Habilitar el Digital Low Pass Filter (DLPF) a ~44Hz
+    // Habilitar el Digital Low Pass Filter (DLPF) a ~10Hz para eliminar vibración de motores
 	data = 0x04;
 	mpu6050_WriteData(&data, CONFIG_REG);
 
