@@ -222,7 +222,7 @@ static uint8_t isWebserverMode = 0;     /* 1 = modo webserver activo */
 static uint8_t httpTxBuf[340];
 
 /* ---- Destino UDP (guardado desde el formulario web) ---- */
-static char    udpTargetIP[16]   = "172.23.190.89";
+static char    udpTargetIP[16]   = "192.168.1.52";
 static uint16_t udpTargetPort    = 30010;
 static uint8_t  udpReadyToStart  = 0;
 
@@ -234,6 +234,7 @@ typedef struct {
 } _sWiFiNetwork;
 
 static const _sWiFiNetwork knownNetworks[] = {
+	{ "InternetPlus_872f10_EXT", "wlan78d0ef", "192.168.1.52" },
 	{ "FCAL",    "fcalconcordia.06-2019",    "172.23.190.89"  },
 	{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.10"   },
 	{ "SA04",    "12345678",                "10.93.92.213"   },
@@ -304,6 +305,13 @@ int32_t vel_estimate  = 0;
 int16_t vel_decay     = 98;
 int16_t vel_setpoint_gain = 10;
 int16_t vel_limit     = 500;
+
+// Variables para compensación de rotación en velocidad
+int32_t ax_fast      = 0;   // Filtro rápido de ax para velocidad
+int16_t gy_prev      = 0;   // Valor de gy del ciclo anterior para derivada
+int16_t accel_radius = 5;   // Distancia acelerómetro-centro de rotación en cm
+int16_t ax_offset    = 0;   // Offset de calibración del acelerómetro
+int16_t contrast_threshold = LINE_THRESHOLD; // Ajustable por comando (inicializado con LINE_THRESHOLD)
 
 // Ángulos usando enteros de 8 bits (0 a 255 representa un giro completo)
 uint8_t angle_x = 0;
@@ -1615,7 +1623,10 @@ void PID_ControlTask(void) {
 
 	// Medición del delta-time real de ejecución mediante hardware de alta resolución
 	static uint32_t last_cycle_time = 0;
+	static uint32_t speed_brake_timer_ms = 0;
+	static uint8_t speed_brake_active = 0;
 	uint32_t current_cycle_time = DWT->CYCCNT;
+
 	uint32_t dt_us = 20000; // Por defecto nominal de 20ms en el primer ciclo
 
 	if (last_cycle_time != 0) {
@@ -1643,6 +1654,12 @@ void PID_ControlTask(void) {
 		center_ir = 0;
 	if (right_ir < 0)
 		right_ir = 0;
+
+	// Calibración individual por hardware del sensor izquierdo (IR1 / left_ir)
+	left_ir = (left_ir * 3980) / 2550;
+	if (left_ir > 4095) {
+		left_ir = 4095;
+	}
 
 	sum_sensors = left_ir + center_ir + right_ir;
 	if (sum_sensors == 0)
@@ -1686,6 +1703,7 @@ void PID_ControlTask(void) {
 	uint8_t ir5_active = (left_ir > IR_WHITE);
 	uint8_t active_count = ir1_active + ir3_active + ir5_active;
 
+
 	switch (lineState) {
 
 	case LINE_SEARCHING:
@@ -1698,6 +1716,35 @@ void PID_ControlTask(void) {
 		break;
 
 	case LINE_FOLLOWING:
+			// --- SISTEMA DE PAUSA Y FRENADO POR VELOCIDAD EXCESIVA (300 ms) ---
+			if (speed_brake_active) {
+				speed_brake_timer_ms += dt_us / 1000;
+				turn_offset = 0;
+
+				// Frenar primero (primeros 100 ms a setpoint 200 para tirar el chasis hacia atrás)
+				// y luego setear el ángulo (los siguientes 200 ms al setpoint de balanceo estático de 50)
+				if (speed_brake_timer_ms < 100) {
+					target_setpoint = 200; // Ángulo de frenado activo
+				} else {
+					target_setpoint = setpoint; // Ángulo estático de equilibrio (50)
+				}
+
+				if (speed_brake_timer_ms >= 300) {
+					speed_brake_active = 0;
+					speed_brake_timer_ms = 0;
+				}
+				break; // Salta todo el procesamiento del seguidor de línea
+			}
+
+			// Condición de activación: Si el ángulo es menor o igual a -15 grados (-1500 LSB)
+			if (current_angle <= -1500) {
+				speed_brake_active = 1;
+				speed_brake_timer_ms = 0;
+				turn_offset = 0;
+				target_setpoint = 200; // Frenado activo inmediato en el primer ciclo
+				break;
+			}
+
 			if (active_count == 3 && ir1_active && ir3_active && ir5_active) {
 				lineState = LINE_CROSS;
 				break;
@@ -1727,7 +1774,7 @@ void PID_ControlTask(void) {
 			}
 
 			// --- ESTIMACIÓN DE VELOCIDAD CON COMPENSACIÓN DE GRAVEDAD ---
-			int32_t ax_fast = (ax * 20 + ax_filt * 80) / 100;
+			ax_fast = (ax * 20 + ax_filt * 80) / 100;
 			int32_t gravity_x = (current_angle_hr * 16384) / 573000;
 			int32_t ax_clean  = ax_fast - gravity_x;
 
@@ -1745,7 +1792,7 @@ void PID_ControlTask(void) {
 				// =========================================================
 				// --- VARIABLES DEL LIMITADOR DE VELOCIDAD ---
 				// (Al ser static, conservan su valor en cada ciclo del PID)
-				// ========================	================================
+				// =========================================================
 				static uint16_t speed_timer_ms = 0;
 				static uint8_t is_speed_braking = 0;
 				static uint8_t brake_cycles = 0;
@@ -1768,9 +1815,9 @@ void PID_ControlTask(void) {
 				// =========================================================
 				speed_timer_ms += dt_us / 1000; // Sumamos los milisegundos reales transcurridos
 
-				// Condición 1: El ángulo superó los -1200 (se está cayendo muy de cara)
+				// Condición 1: El ángulo superó los -1500 (se está cayendo muy de cara)
 				// Condición 2: Pasaron 500 ms de aceleración ininterrumpida
-				if (current_angle < -1200 || speed_timer_ms >= 500) {
+				if (current_angle < -1500 || speed_timer_ms >= 500) {
 					is_speed_braking = 1;
 					brake_cycles = 5; // Mantiene el freno por 5 ciclos (100 ms) para cortar la inercia
 					speed_timer_ms = 0; // Reiniciamos el reloj para los próximos 500ms
@@ -1841,6 +1888,7 @@ void PID_ControlTask(void) {
 	// =========================================================
 	// --- 4. LAZO PID CENTRAL (Equilibrio) ---
 	// =========================================================
+
 
 	// --- UMBRAL DINÁMICO TRASERO ---
 	// Si está siguiendo línea usa ANG20, si no (búsqueda/perdido) usa ANG10
@@ -1929,7 +1977,6 @@ void PID_ControlTask(void) {
 	// current_angle está en grados * 100.
 	static uint16_t calib_cycle = 0;
 	static int32_t ax_calib_sum = 0;
-	static int16_t ax_offset = 0;
 	static int32_t last_gz_filt = 0;
 	static int32_t gx_filt = 0, gy_filt = 0, gz_filt = 0;
 	static int32_t ax_tele_filt = 0;
