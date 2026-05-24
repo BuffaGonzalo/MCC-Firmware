@@ -100,6 +100,12 @@
 #define SCALE_LINE			1000
 #define LINE_THRESHOLD		1250//1800
 #define IR_WHITE			1500  // Lectura ADC base sobre superficie blanca (~1800-2000)
+
+// Calibración lineal de dos puntos para el sensor IR1 (left_ir)
+#define IR1_WHITE_RAW       300   // Valor raw de IR1 en blanco (leído en visualizador, e.g. 300)
+#define IR1_BLACK_RAW       3900  // Valor raw de IR1 en negro (leído en visualizador, e.g. 3900)
+#define IR_WHITE_TARGET     600   // Valor objetivo/promedio para blanco (e.g. 600)
+#define IR_BLACK_TARGET     3600  // Valor objetivo/promedio para negro (e.g. 3600)
 #define LINE_LOST_PHASE0  	35
 #define LINE_LOST_PHASE1  	70
 #define TURNPWM_LEFT		900
@@ -222,7 +228,7 @@ static uint8_t isWebserverMode = 0;     /* 1 = modo webserver activo */
 static uint8_t httpTxBuf[340];
 
 /* ---- Destino UDP (guardado desde el formulario web) ---- */
-static char    udpTargetIP[16]   = "192.168.1.52";
+static char    udpTargetIP[16]   = "192.168.0.10";
 static uint16_t udpTargetPort    = 30010;
 static uint8_t  udpReadyToStart  = 0;
 
@@ -234,10 +240,10 @@ typedef struct {
 } _sWiFiNetwork;
 
 static const _sWiFiNetwork knownNetworks[] = {
-	{ "InternetPlus_872f10_EXT", "wlan78d0ef", "192.168.1.52" },
-	{ "FCAL",    "fcalconcordia.06-2019",    "172.23.190.89"  },
 	{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.10"   },
+	{ "FCAL",    "fcalconcordia.06-2019",    "172.23.190.89"  },
 	{ "SA04",    "12345678",                "10.93.92.213"   },
+	{ "InternetPlus_872f10_EXT", "wlan78d0ef", "192.168.1.52" },
 };
 
 static uint8_t  currentNetworkIdx  = 0;   /* Indice de la red que estamos intentando */
@@ -999,14 +1005,12 @@ void do10ms() {
 				if (udpSilenceCounter < 5)
 					udpSilenceCounter++;
 
-				/* Enviar ALIVE solo si:
-				 * 1. UDP conectado y no en modo webserver
-				 * 2. La PC NO está comunicándose activamente (silencio > 3s)
-				 * Cuando la PC envía GETMPU/GETADC, udpSilenceCounter se resetea
-				 * en COMMTask, suprimiendo los ALIVEs automáticamente.
-				 */
+				/* Enviar ALIVE solo si la PC no esta comunicandose activamente.
+				 * udpSilenceCounter se incrementa cada 1s y se resetea a 0 cuando
+				 * llega un comando WiFi. Se fuerza a 5 al conectar UDP para garantizar
+				 * el primer ALIVE. Threshold: 5s de silencio. */
 				if(!isWebserverMode && ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED
-					&& udpSilenceCounter >= 5){
+						&& udpSilenceCounter >= 5){
 					static uint8_t bufferTx[9] = { 'U', 'N', 'E', 'R', 0x03, ':', ALIVE, ACK, 0x98 };
 					ESP01_Send(0, bufferTx, 0, 9, TXBUFSIZE);
 				}
@@ -1461,6 +1465,10 @@ void OnESP01ChangeState(_eESP01STATUS state)
 
         networkScanActive = 0; /* Detenemos el escaneo */
         udpReadyToStart = 1;
+        
+        /* Forzar udpSilenceCounter a 5 para que el primer ALIVE se envie
+         * en cuanto el UDP quede conectado, sin esperar 5 ciclos de 1s. */
+        udpSilenceCounter = 5;
     }
     else if(state == ESP01_WIFI_DISCONNECTED){
         /* Si perdemos la conexión en pleno uso, reactivamos la búsqueda */
@@ -1625,6 +1633,8 @@ void PID_ControlTask(void) {
 	static uint32_t last_cycle_time = 0;
 	static uint32_t speed_brake_timer_ms = 0;
 	static uint8_t speed_brake_active = 0;
+	static uint16_t line_lost_debounce_count = 0;
+	static int32_t last_turn_offset = 0;
 	uint32_t current_cycle_time = DWT->CYCCNT;
 
 	uint32_t dt_us = 20000; // Por defecto nominal de 20ms en el primer ciclo
@@ -1644,22 +1654,29 @@ void PID_ControlTask(void) {
 	// =========================================================
 	// --- 1. LECTURA E INVERSIÓN DE SENSORES DE LÍNEA ---
 	// =========================================================
-	int32_t left_ir = 4095 - adcData[5];
+	// Sensor Izquierdo = IR5 (adcData[5]), Centro = IR3 (adcData[3]), Derecho = IR1 (adcData[1])
+	int32_t left_ir   = 4095 - adcData[5];
 	int32_t center_ir = 4095 - adcData[3];
-	int32_t right_ir = 4095 - adcData[1];
+	int32_t right_ir  = 4095 - adcData[1];
 
-	if (left_ir < 0)
-		left_ir = 0;
-	if (center_ir < 0)
-		center_ir = 0;
-	if (right_ir < 0)
-		right_ir = 0;
+	if (left_ir   < 0) left_ir   = 0;
+	if (center_ir < 0) center_ir = 0;
+	if (right_ir  < 0) right_ir  = 0;
 
-	// Calibración individual por hardware del sensor izquierdo (IR1 / left_ir)
-	left_ir = (left_ir * 3980) / 2550;
-	if (left_ir > 4095) {
-		left_ir = 4095;
-	}
+	// Calibración lineal de dos puntos para el sensor IR1 (right_ir, físicamente a la derecha)
+	right_ir = IR_WHITE_TARGET + ((right_ir - IR1_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR1_BLACK_RAW - IR1_WHITE_RAW);
+	if (right_ir < 0)    right_ir = 0;
+	if (right_ir > 4095) right_ir = 4095;
+
+	// Calibración lineal de dos puntos para el sensor IR3 (center_ir, físicamente al centro)
+	center_ir = IR_WHITE_TARGET + ((center_ir - IR1_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR1_BLACK_RAW - IR1_WHITE_RAW);
+	if (center_ir < 0)    center_ir = 0;
+	if (center_ir > 4095) center_ir = 4095;
+
+	// Calibración lineal de dos puntos para el sensor IR5 (left_ir, físicamente a la izquierda)
+	left_ir = IR_WHITE_TARGET + ((left_ir - IR1_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR1_BLACK_RAW - IR1_WHITE_RAW);
+	if (left_ir < 0)    left_ir = 0;
+	if (left_ir > 4095) left_ir = 4095;
 
 	sum_sensors = left_ir + center_ir + right_ir;
 	if (sum_sensors == 0)
@@ -1698,9 +1715,9 @@ void PID_ControlTask(void) {
 	int32_t target_setpoint = setpoint;
 	turn_offset = 0;
 
-	uint8_t ir1_active = (right_ir > IR_WHITE);
+	uint8_t ir1_active = (left_ir > IR_WHITE);
 	uint8_t ir3_active = (center_ir > IR_WHITE);
-	uint8_t ir5_active = (left_ir > IR_WHITE);
+	uint8_t ir5_active = (right_ir > IR_WHITE);
 	uint8_t active_count = ir1_active + ir3_active + ir5_active;
 
 
@@ -1751,26 +1768,37 @@ void PID_ControlTask(void) {
 			}
 
 			if (active_count == 0) {
-				line_lost_timer = 0;
-				line_lost_phase = 0;
-				lineState = LINE_LOST;
-				break;
-			}
+				line_lost_debounce_count++;
+				if (line_lost_debounce_count >= 6) { // ~120 ms (6 ciclos de 20ms)
+					line_lost_debounce_count = 0;
+					line_lost_timer = 0;
+					line_lost_phase = 0;
+					lineState = LINE_LOST;
+					break;
+				}
+				// Durante la pausa de debounce, mantenemos la trayectoria previa para seguir avanzando
+				error_linea = last_line_error;
+				turn_offset = last_turn_offset;
+			} else {
+				line_lost_debounce_count = 0;
 
-			error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors)
-					/ 10;
-			abs_error = (error_linea > 0) ? error_linea : -error_linea;
+				error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors)
+						/ 10;
+				abs_error = (error_linea > 0) ? error_linea : -error_linea;
 
-			linear_term = Kp_line * error_linea;
-			quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
+				linear_term = Kp_line * error_linea;
+				quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
 
-			if (turn_divisor == 0) turn_divisor = 1; // Sistema de Seguridad
-			turn_offset = (linear_term + quad_term) / turn_divisor;
+				if (turn_divisor == 0) turn_divisor = 1; // Sistema de Seguridad
+				turn_offset = (linear_term + quad_term) / turn_divisor;
 
-			if (turn_offset > turn_limit) {
-				turn_offset = turn_limit;
-			} else if (turn_offset < -turn_limit) {
-				turn_offset = -turn_limit;
+				if (turn_offset > turn_limit) {
+					turn_offset = turn_limit;
+				} else if (turn_offset < -turn_limit) {
+					turn_offset = -turn_limit;
+				}
+
+				last_turn_offset = turn_offset;
 			}
 
 			// --- ESTIMACIÓN DE VELOCIDAD CON COMPENSACIÓN DE GRAVEDAD ---
