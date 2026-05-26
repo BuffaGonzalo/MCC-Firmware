@@ -30,8 +30,8 @@
 ../Core/Src/main.c:978:6:do10ms	24	static
 ../Core/Src/main.c:1639:6:buttonTask	0	static
 ../Core/Src/main.c:1652:6:PID_ControlTask	64	static
-../Core/Src/main.c:2328:6:SystemClock_Config	88	static,ignoring_inline_asm
-../Core/Src/main.c:2183:5:main	104	static,ignoring_inline_asm
-../Core/Src/main.c:2848:6:HAL_UART_RxCpltCallback	8	static
-../Core/Src/main.c:2861:6:HAL_UART_ErrorCallback	0	static
-../Core/Src/main.c:2882:6:Error_Handler	0	static,ignoring_inline_asm
+../Core/Src/main.c:2260:6:SystemClock_Config	88	static,ignoring_inline_asm
+../Core/Src/main.c:2115:5:main	104	static,ignoring_inline_asm
+../Core/Src/main.c:2780:6:HAL_UART_RxCpltCallback	8	static
+../Core/Src/main.c:2793:6:HAL_UART_ErrorCallback	0	static
+../Core/Src/main.c:2814:6:Error_Handler	0	static,ignoring_inline_asm

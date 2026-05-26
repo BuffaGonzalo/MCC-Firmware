@@ -773,12 +773,12 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((adcDataTx[5] >> 8) & 0xFF));
 
 		// 12. Sensores de línea Calibrados (6 bytes: IR1, IR3, IR5)
-		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (cal_right_ir & 0xFF));
-		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((cal_right_ir >> 8) & 0xFF));
-		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (cal_center_ir & 0xFF));
-		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((cal_center_ir >> 8) & 0xFF));
 		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (cal_left_ir & 0xFF));
 		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((cal_left_ir >> 8) & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (cal_center_ir & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((cal_center_ir >> 8) & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (cal_right_ir & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((cal_right_ir >> 8) & 0xFF));
 
 		// Checksum final
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
@@ -1656,8 +1656,6 @@ void PID_ControlTask(void) {
 
 	// Medición del delta-time real de ejecución mediante hardware de alta resolución
 	static uint32_t last_cycle_time = 0;
-	static uint32_t speed_brake_timer_ms = 0;
-	static uint8_t speed_brake_active = 0;
 	static uint16_t line_lost_debounce_count = 0;
 	static int32_t last_turn_offset = 0;
 	uint32_t current_cycle_time = DWT->CYCCNT;
@@ -1679,17 +1677,17 @@ void PID_ControlTask(void) {
 	// =========================================================
 	// --- 1. LECTURA E INVERSIÓN DE SENSORES DE LÍNEA ---
 	// =========================================================
-	// Sensor Izquierdo = IR5 (adcData[5]), Centro = IR3 (adcData[3]), Derecho = IR1 (adcData[1])
-	int32_t left_ir   = 4095 - adcData[5];
+	// Sensor Izquierdo = IR1 (adcData[1]), Centro = IR3 (adcData[3]), Derecho = IR5 (adcData[5])
+	int32_t left_ir   = 4095 - adcData[1];
 	int32_t center_ir = 4095 - adcData[3];
-	int32_t right_ir  = 4095 - adcData[1];
+	int32_t right_ir  = 4095 - adcData[5];
 
 	if (left_ir   < 0) left_ir   = 0;
 	if (center_ir < 0) center_ir = 0;
 	if (right_ir  < 0) right_ir  = 0;
 
-	// Calibración lineal de dos puntos para el sensor IR1 (right_ir, físicamente a la derecha)
-	right_ir = IR_WHITE_TARGET + ((right_ir - IR1_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR1_BLACK_RAW - IR1_WHITE_RAW);
+	// Calibración lineal de dos puntos para el sensor IR5 (right_ir, físicamente a la derecha)
+	right_ir = IR_WHITE_TARGET + ((right_ir - IR5_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR5_BLACK_RAW - IR5_WHITE_RAW);
 	if (right_ir < 0)    right_ir = 0;
 	if (right_ir > 4095) right_ir = 4095;
 
@@ -1698,8 +1696,8 @@ void PID_ControlTask(void) {
 	if (center_ir < 0)    center_ir = 0;
 	if (center_ir > 4095) center_ir = 4095;
 
-	// Calibración lineal de dos puntos para el sensor IR5 (left_ir, físicamente a la izquierda)
-	left_ir = IR_WHITE_TARGET + ((left_ir - IR5_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR5_BLACK_RAW - IR5_WHITE_RAW);
+	// Calibración lineal de dos puntos para el sensor IR1 (left_ir, físicamente a la izquierda)
+	left_ir = IR_WHITE_TARGET + ((left_ir - IR1_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR1_BLACK_RAW - IR1_WHITE_RAW);
 	if (left_ir < 0)    left_ir = 0;
 	if (left_ir > 4095) left_ir = 4095;
 
@@ -1745,9 +1743,9 @@ void PID_ControlTask(void) {
 	int32_t target_setpoint = setpoint;
 	turn_offset = 0;
 
-	uint8_t ir1_active = (right_ir > IR_WHITE);
+	uint8_t ir1_active = (left_ir > IR_WHITE);
 	uint8_t ir3_active = (center_ir > IR_WHITE);
-	uint8_t ir5_active = (left_ir > IR_WHITE);
+	uint8_t ir5_active = (right_ir > IR_WHITE);
 	uint8_t active_count = ir1_active + ir3_active + ir5_active;
 
 
@@ -1763,35 +1761,6 @@ void PID_ControlTask(void) {
 		break;
 
 	case LINE_FOLLOWING:
-			// --- SISTEMA DE PAUSA Y FRENADO POR VELOCIDAD EXCESIVA (300 ms) ---
-			if (speed_brake_active) {
-				speed_brake_timer_ms += dt_us / 1000;
-				turn_offset = 0;
-
-				// Frenar primero (primeros 100 ms a setpoint 200 para tirar el chasis hacia atrás)
-				// y luego setear el ángulo (los siguientes 200 ms al setpoint de balanceo estático de 50)
-				if (speed_brake_timer_ms < 100) {
-					target_setpoint = 200; // Ángulo de frenado activo
-				} else {
-					target_setpoint = setpoint; // Ángulo estático de equilibrio (50)
-				}
-
-				if (speed_brake_timer_ms >= 300) {
-					speed_brake_active = 0;
-					speed_brake_timer_ms = 0;
-				}
-				break; // Salta todo el procesamiento del seguidor de línea
-			}
-
-			// Condición de activación: Si el ángulo es menor o igual a -15 grados (-1500 LSB)
-			if (current_angle <= -1500) {
-				speed_brake_active = 1;
-				speed_brake_timer_ms = 0;
-				turn_offset = 0;
-				target_setpoint = 200; // Frenado activo inmediato en el primer ciclo
-				break;
-			}
-
 			if (active_count == 3 && ir1_active && ir3_active && ir5_active) {
 				lineState = LINE_CROSS;
 				break;
@@ -1845,61 +1814,24 @@ void PID_ControlTask(void) {
 			if (vel_correction >  vel_limit) vel_correction =  vel_limit;
 			if (vel_correction < -vel_limit) vel_correction = -vel_limit;
 
+			// --- CONTROL DE VELOCIDAD PURO EN CURVAS ---
+			int32_t abs_turn = (turn_offset > 0) ? turn_offset : -turn_offset;
+			int32_t curve_brake = 0;
 
-			{
-				// =========================================================
-				// --- VARIABLES DEL LIMITADOR DE VELOCIDAD ---
-				// (Al ser static, conservan su valor en cada ciclo del PID)
-				// =========================================================
-				static uint16_t speed_timer_ms = 0;
-				static uint8_t is_speed_braking = 0;
-				static uint8_t brake_cycles = 0;
-
-				// --- CONTROL DE VELOCIDAD PURO EN CURVAS ---
-				int32_t abs_turn = (turn_offset > 0) ? turn_offset : -turn_offset;
-				int32_t curve_brake = 0;
-
-				if (brake_angle_div != 0) {
-					curve_brake = abs_turn / brake_angle_div;
-				}
-
-				// CORRECCIÓN: Como attack_setpoint es NEGATIVO, para frenar
-				// debemos SUMAR el curve_brake para que se acerque a 0.
-				target_setpoint = attack_setpoint + curve_brake;
-				target_setpoint += vel_correction;
-
-				// =========================================================
-				// --- NUEVA LÓGICA: FRENO PULSADO POR TIEMPO E INCLINACIÓN ---
-				// =========================================================
-				speed_timer_ms += dt_us / 1000; // Sumamos los milisegundos reales transcurridos
-
-				// Condición 1: El ángulo superó los -1500 (se está cayendo muy de cara)
-				// Condición 2: Pasaron 500 ms de aceleración ininterrumpida
-				if (current_angle < -1500 || speed_timer_ms >= 500) {
-					is_speed_braking = 1;
-					brake_cycles = 5; // Mantiene el freno por 5 ciclos (100 ms) para cortar la inercia
-					speed_timer_ms = 0; // Reiniciamos el reloj para los próximos 500ms
-				}
-
-				// Aplicación efectiva del freno
-				if (is_speed_braking) {
-					// Forzamos el setpoint al punto de equilibrio estático.
-					// Al pedirle que se quede "quieto" (ej: 50), el PID tirará el chasis
-					// fuertemente hacia atrás, absorbiendo toda la velocidad excedente.
-					target_setpoint = 200;
-
-					brake_cycles--;
-					if (brake_cycles == 0) {
-						is_speed_braking = 0; // Termina el frenado, vuelve a acelerar
-					}
-				}
-
-				// --- LÍMITES DE SEGURIDAD FINAL ---
-				if (target_setpoint > ANG10)
-					target_setpoint = ANG10;
-				if (target_setpoint < -ANG10)
-					target_setpoint = -ANG10;
+			if (brake_angle_div != 0) {
+				curve_brake = abs_turn / brake_angle_div;
 			}
+
+			// CORRECCIÓN: Como attack_setpoint es NEGATIVO, para frenar
+			// debemos SUMAR el curve_brake para que se acerque a 0.
+			target_setpoint = attack_setpoint + curve_brake;
+			target_setpoint += vel_correction;
+
+			// --- LÍMITES DE SEGURIDAD FINAL ---
+			if (target_setpoint > ANG10)
+				target_setpoint = ANG10;
+			if (target_setpoint < -ANG10)
+				target_setpoint = -ANG10;
 
 			last_line_error = error_linea;
 			break;

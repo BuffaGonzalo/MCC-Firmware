@@ -29,9 +29,9 @@
 ../Core/Src/main.c:1615:6:buttonTimeout10ms	4
 ../Core/Src/main.c:978:6:do10ms	13
 ../Core/Src/main.c:1639:6:buttonTask	5
-../Core/Src/main.c:1652:6:PID_ControlTask	59
-../Core/Src/main.c:2328:6:SystemClock_Config	4
-../Core/Src/main.c:2183:5:main	32
-../Core/Src/main.c:2848:6:HAL_UART_RxCpltCallback	2
-../Core/Src/main.c:2861:6:HAL_UART_ErrorCallback	2
-../Core/Src/main.c:2882:6:Error_Handler	1
+../Core/Src/main.c:1652:6:PID_ControlTask	51
+../Core/Src/main.c:2260:6:SystemClock_Config	4
+../Core/Src/main.c:2115:5:main	32
+../Core/Src/main.c:2780:6:HAL_UART_RxCpltCallback	2
+../Core/Src/main.c:2793:6:HAL_UART_ErrorCallback	2
+../Core/Src/main.c:2814:6:Error_Handler	1
