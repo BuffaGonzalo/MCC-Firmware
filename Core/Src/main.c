@@ -101,9 +101,14 @@
 #define LINE_THRESHOLD		1250//1800
 #define IR_WHITE			1500  // Lectura ADC base sobre superficie blanca (~1800-2000)
 
-// Calibración lineal de dos puntos para el sensor IR1 (left_ir)
-#define IR1_WHITE_RAW       300   // Valor raw de IR1 en blanco (leído en visualizador, e.g. 300)
-#define IR1_BLACK_RAW       3900  // Valor raw de IR1 en negro (leído en visualizador, e.g. 3900)
+// Calibración lineal de dos puntos para los sensores de línea
+#define IR1_WHITE_RAW       3493  // Valor raw de IR1 en blanco (Derecha)
+#define IR1_BLACK_RAW       661   // Valor raw de IR1 en negro (Derecha)
+#define IR3_WHITE_RAW       3863  // Valor raw de IR3 en blanco (Centro)
+#define IR3_BLACK_RAW       512   // Valor raw de IR3 en negro (Centro)
+#define IR5_WHITE_RAW       3882  // Valor raw de IR5 en blanco (Izquierda)
+#define IR5_BLACK_RAW       1051  // Valor raw de IR5 en negro (Izquierda)
+
 #define IR_WHITE_TARGET     600   // Valor objetivo/promedio para blanco (e.g. 600)
 #define IR_BLACK_TARGET     3600  // Valor objetivo/promedio para negro (e.g. 3600)
 #define LINE_LOST_PHASE0  	35
@@ -1689,12 +1694,12 @@ void PID_ControlTask(void) {
 	if (right_ir > 4095) right_ir = 4095;
 
 	// Calibración lineal de dos puntos para el sensor IR3 (center_ir, físicamente al centro)
-	center_ir = IR_WHITE_TARGET + ((center_ir - IR1_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR1_BLACK_RAW - IR1_WHITE_RAW);
+	center_ir = IR_WHITE_TARGET + ((center_ir - IR3_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR3_BLACK_RAW - IR3_WHITE_RAW);
 	if (center_ir < 0)    center_ir = 0;
 	if (center_ir > 4095) center_ir = 4095;
 
 	// Calibración lineal de dos puntos para el sensor IR5 (left_ir, físicamente a la izquierda)
-	left_ir = IR_WHITE_TARGET + ((left_ir - IR1_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR1_BLACK_RAW - IR1_WHITE_RAW);
+	left_ir = IR_WHITE_TARGET + ((left_ir - IR5_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR5_BLACK_RAW - IR5_WHITE_RAW);
 	if (left_ir < 0)    left_ir = 0;
 	if (left_ir > 4095) left_ir = 4095;
 
@@ -1740,9 +1745,9 @@ void PID_ControlTask(void) {
 	int32_t target_setpoint = setpoint;
 	turn_offset = 0;
 
-	uint8_t ir1_active = (left_ir > IR_WHITE);
+	uint8_t ir1_active = (right_ir > IR_WHITE);
 	uint8_t ir3_active = (center_ir > IR_WHITE);
-	uint8_t ir5_active = (right_ir > IR_WHITE);
+	uint8_t ir5_active = (left_ir > IR_WHITE);
 	uint8_t active_count = ir1_active + ir3_active + ir5_active;
 
 
@@ -2399,7 +2404,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
