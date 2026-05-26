@@ -161,6 +161,10 @@ uint32_t heartBeatMask[] = {0x55555555, 0xFFFFFFFF, 0x00000000, 0x1, 0x2010080, 
 
 const char firmware[] = "EX100923v01\n";
 
+volatile int16_t cal_left_ir = 0;
+volatile int16_t cal_center_ir = 0;
+volatile int16_t cal_right_ir = 0;
+
 //Tiempos
 uint8_t time10ms;
 uint8_t tmo100ms = 10;
@@ -688,7 +692,7 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		break;
 	case GETINTERNALDATA:
 		// Estructura simplificada para sincronización de parámetros (60 bytes de datos + 1 chk)
-		unerPrtcl_PutHeaderOnTx(dataTx, GETINTERNALDATA, 67);
+		unerPrtcl_PutHeaderOnTx(dataTx, GETINTERNALDATA, 79);
 
 		// 1. Bloque PID Balancín (10 bytes: Kp, Ki, Kd, Max, Min)
 		int16_t pid_bal[5] = { Kp_stable, Ki_stable, Kd_stable, (int16_t)minPWM_Right, (int16_t)minPWM_Left};
@@ -754,6 +758,22 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		// 10. Turn Limit (2 bytes: turn_limit)
 		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (turn_limit & 0xFF));
 		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((turn_limit >> 8) & 0xFF));
+
+		// 11. Sensores de línea RAW (6 bytes: IR1, IR3, IR5)
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (adcDataTx[1] & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((adcDataTx[1] >> 8) & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (adcDataTx[3] & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((adcDataTx[3] >> 8) & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (adcDataTx[5] & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((adcDataTx[5] >> 8) & 0xFF));
+
+		// 12. Sensores de línea Calibrados (6 bytes: IR1, IR3, IR5)
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (cal_right_ir & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((cal_right_ir >> 8) & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (cal_center_ir & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((cal_center_ir >> 8) & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (cal_left_ir & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((cal_left_ir >> 8) & 0xFF));
 
 		// Checksum final
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
@@ -1465,7 +1485,7 @@ void OnESP01ChangeState(_eESP01STATUS state)
 
         networkScanActive = 0; /* Detenemos el escaneo */
         udpReadyToStart = 1;
-        
+
         /* Forzar udpSilenceCounter a 5 para que el primer ALIVE se envie
          * en cuanto el UDP quede conectado, sin esperar 5 ciclos de 1s. */
         udpSilenceCounter = 5;
@@ -1677,6 +1697,11 @@ void PID_ControlTask(void) {
 	left_ir = IR_WHITE_TARGET + ((left_ir - IR1_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR1_BLACK_RAW - IR1_WHITE_RAW);
 	if (left_ir < 0)    left_ir = 0;
 	if (left_ir > 4095) left_ir = 4095;
+
+	// Guardar copias globales de los valores calibrados para telemetría
+	cal_left_ir   = (int16_t)left_ir;
+	cal_center_ir = (int16_t)center_ir;
+	cal_right_ir  = (int16_t)right_ir;
 
 	sum_sensors = left_ir + center_ir + right_ir;
 	if (sum_sensors == 0)
