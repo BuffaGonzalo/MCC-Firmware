@@ -40,81 +40,140 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+// Estructura contenedora de credenciales de red conocida
+typedef struct {
+	const char *ssid;
+	const char *password;
+	const char *targetIP;
+} _sWiFiNetwork;
 
+// MEF de estados de trayectoria de la pista (Seguidor de línea)
+typedef enum {
+	LINE_SEARCHING,                                   // Estado 0: Pérdida total inicial, buscando línea activamente
+	LINE_FOLLOWING,                                   // Estado 1: Seguimiento PID/Lineal normal sobre la pista
+	LINE_LOST,                                        // Estado 2: Desvío reciente de la línea, aplicando memoria de búsqueda
+	LINE_CROSS                                        // Estado 3: Cruce o bifurcación en T detectada (todo negro)
+} _eLineState;
+
+// MEF del control de esquivado de obstáculos
+typedef enum {
+	OBS_IDLE,                                         // Estado 0: Libre de obstáculos frontalmente
+	OBS_APPROACH,                                     // Estado 1: Detección frontal inminente, decidiendo desvío
+	OBS_CORNER,                                       // Estado 2: Maniobrando esquinas cerradas alrededor del objeto
+	OBS_WALL                                          // Estado 3: Seguimiento paralelo a la pared del obstáculo
+} _eObsState;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-//time
-#define	TO10MS				40
-#define	SSD1306_MAXADC		30
-#define	SSD1306_MINADC		60
-#define	SSD1306_SNDCOL		40
-#define	SSD1306_TRDCOL		85
+// =========================================================
+// //GENERAL
+// =========================================================
+#define TO10MS              40       // Umbral para tarea de 10ms (40 x 250us)
+#define T100MS              100      // Equivalente a 100ms
+#define T1000MS             1000     // Equivalente a 1000ms
+#define T2000MS             2000     // Equivalente a 2000ms
+#define T3000MS             3000     // Equivalente a 3000ms
+#define T400MS              400      // Ventana de espera para multiclic de botones (400ms)
+#define ON                  1        // Banderas de estado encendido
+#define OFF                 0        // Banderas de estado apagado
+#define DEBOUNCE            4        // Ciclos de antirrebote para botones
 
-#define SSD1306				0
-#define MPU6050				1
-#define I2CSIZE				16
+// =========================================================
+// //DISPLAY
+// =========================================================
+#define SSD1306_MAXADC      30       // Límite superior de ADC para gráficos en pantalla
+#define SSD1306_MINADC      60       // Límite inferior de ADC para gráficos en pantalla
+#define SSD1306_SNDCOL      40       // Segunda columna del display
+#define SSD1306_TRDCOL      85       // Tercera columna del display
+#define SSD1306             0        // Identificador de tarea de pantalla en la Pila I2C
 
-#define ON					1
-#define OFF					0
+// =========================================================
+// //MPU
+// =========================================================
+#define MPU6050             1        // Identificador de tarea del giroscopio en la Pila I2C
+#define DT_MS               20       // Delta de tiempo nominal en ms para integración de giroscopio
+#define ALPHA_GYRO          98       // Confianza porcentual del filtro complementario en el giroscopio
+#define ALPHA_ACC           2        // Confianza porcentual del filtro complementario en el acelerómetro
+#define AZ_MIN_VALID        4000     // Mínimo valor absoluto del acelerómetro Z para validar el ángulo
+#ifndef MPU6050_ADDR
+#define MPU6050_ADDR        (0x68 << 1) // Dirección I2C del giroscopio MPU6050
+#endif
 
-#define TIM3CP				9999//2500 // Anteriormente el valor era 9999, modificado para tener mas precision
+// =========================================================
+// //I2C
+// =========================================================
+#define I2CSIZE             16       // Tamaño del buffer de tareas I2C (Pila)
 
-//WebServer - solo necesitamos la primera linea del request HTTP (~80 bytes max)
-#define HTTP_BUF_SIZE   	128
+// =========================================================
+// //MOTORES
+// =========================================================
+#define TIM3CP              9999     // Período máximo del PWM de los motores (Timer 3)
 
-#define DEBOUNCE             4
+// =========================================================
+// //WIFI
+// =========================================================
+#define HTTP_BUF_SIZE       128      // Tamaño máximo de almacenamiento de request HTTP (Webserver)
+#define NUM_KNOWN_NETWORKS  (sizeof(knownNetworks) / sizeof(knownNetworks[0])) // Cantidad de redes registradas
+#define SCANTIME            3000     // Tiempo en ms para escaneo de redes conocidas
 
-#define PID_SCALE_FACTOR	100 //factor de escala, evitar decimales o AFP (aritmetica de punto fijo)
-#define ANG45				45*PID_SCALE_FACTOR
-#define ANG20				20*PID_SCALE_FACTOR
-#define ANG15				15*PID_SCALE_FACTOR
-#define ANG10				10*PID_SCALE_FACTOR
-#define ANG2				2*PID_SCALE_FACTOR
+// =========================================================
+// //PID
+// =========================================================
+#define PID_SCALE_FACTOR    100      // Factor de escala (x100) para evitar uso de floats en el PID
+#define ANG45               45*PID_SCALE_FACTOR // Ángulo de caída extrema (45.00°)
+#define ANG20               20*PID_SCALE_FACTOR // Ángulo de límite de integración PID (20.00°)
+#define ANG18               18*PID_SCALE_FACTOR // Ángulo de inclinación crítica delantera (18.00°)
+#define ANG15               15*PID_SCALE_FACTOR // Ángulo de umbral dinámico trasero en curva (15.00°)
+#define ANG12               12*PID_SCALE_FACTOR // Ángulo de setpoint de ataque en curva (12.00°)
+#define ANG10               10*PID_SCALE_FACTOR // Ángulo de setpoint de ataque estándar (10.00°)
+#define ANG7_5              75*PID_SCALE_FACTOR/10 // Ángulo de recuperación amortiguado (7.50°)
+#define ANG2                2*PID_SCALE_FACTOR  // Ángulo de caída delantera (2.00°)
 
-// Umbrales de control avanzado LINE_FOLLOWING
-#define ANG7			7*PID_SCALE_FACTOR   // Umbral: ángulo insuficiente (dispara boost)
-#define ANG14			14*PID_SCALE_FACTOR  // Impulso de arranque (boost setpoint)
-#define ANG16			165*PID_SCALE_FACTOR/10  // Umbral de salvación (freno de emergencia) = 16.5°
-#define BOOST_CYCLES    10  // 10 ciclos x 20ms = 200ms de impulso
-#define STAB_CYCLES     15  // 15 ciclos x 20ms = 300ms de estabilización
-#define LOW_ANGLE_CYCLES 25 // 25 ciclos x 20ms = 500ms con ángulo insuficiente → dispara boost
+// Umbrales de control avanzado LINE_FOLLOWING (Obsoletos en lazo de control simplificado)
+#define ANG7                7*PID_SCALE_FACTOR   // Ángulo insuficiente
+#define ANG14               14*PID_SCALE_FACTOR  // Boost de arranque
+#define ANG16               165*PID_SCALE_FACTOR/10  // Freno de salvación
 
-// Giroscopio
-#define DT_MS               20
-// Filtro Complementario
-#define ALPHA_GYRO          98     // 98% de confianza al giroscopio
-#define ALPHA_ACC           2      // 2% de confianza al acelerómetro
+#define BOOST_CYCLES        10       // Ciclos de duración del boost de arranque
+#define STAB_CYCLES         15       // Ciclos de duración del freno de salvación
+#define LOW_ANGLE_CYCLES    25       // Ciclos necesarios con ángulo bajo para disparar boost
 
-#define AZ_MIN_VALID  		4000
+// =========================================================
+// //SEGUIDOR
+// =========================================================
+#define SCALE_LINE          1000     // Factor de escala para el término cuadrático de error de línea
+#define IR_WHITE            500      // Umbral analógico para considerar superficie blanca
+#define LINE_LOST_PHASE0    35       // Duración de la primera fase de búsqueda en ciclos
+#define LINE_LOST_PHASE1    70       // Duración de la segunda fase de búsqueda en ciclos
 
-//#define MIN_PWM 			28  // Mínimo para que la rueda empiece a girar, valor de 6 para un TIM3CP de 9999
-//#define	MAX_PWM 			25  // Máximo permitido para correcciones
+// =========================================================
+// //LUT
+// =========================================================
+#define LUT_SIZE            16       // Tamaño de las Look-Up Tables de calibración de sensores
+#define lut_l1              LUT_IR1_IZQ           // Alias de tabla de calibración izquierda
+#define lut_l2              LUT_IR3_CEN           // Alias de tabla de calibración central
+#define lut_l3              LUT_IR5_DER           // Alias de tabla de calibración derecha
+#define lut_l4              LUT_PROMEDIO          // Alias de tabla de calibración promedio
+#define lut_y               LUT_Y_SCALE           // Alias de escala de salida (0 a 1000)
 
-////seguidor de linea
-#define SCALE_LINE			1000
-#define IR_WHITE			500  // Lectura ADC base sobre superficie blanca (~1800-2000)
+#define lut_l1_x            LUT_IR1_IZQ         // Mapeo X de tabla de calibración izquierda
+#define lut_l1_y            LUT_Y_SCALE         // Mapeo Y de tabla de calibración izquierda
+#define lut_l2_x            LUT_IR3_CEN         // Mapeo X de tabla de calibración central
+#define lut_l2_y            LUT_Y_SCALE         // Mapeo Y de tabla de calibración central
+#define lut_l3_x            LUT_IR5_DER         // Mapeo X de tabla de calibración derecha
+#define lut_l3_y            LUT_Y_SCALE         // Mapeo Y de tabla de calibración derecha
+#define lut_l4_x            LUT_PROMEDIO        // Mapeo X de tabla de calibración promedio
+#define lut_l4_y            LUT_Y_SCALE         // Mapeo Y de tabla de calibración promedio
 
-#define LINE_LOST_PHASE0  	35
-#define LINE_LOST_PHASE1  	70
-
-
-#define T100MS				100
-#define T1000MS				1000
-
-//WIFI
-#define NUM_KNOWN_NETWORKS  (sizeof(knownNetworks) / sizeof(knownNetworks[0]))
-#define SCANTIME			3000//1500
-
-//banderas
-#define ALLFLAGS          	myFlags.bytes
-#define IS10MS				myFlags.bits.bit0
-#define IS20MS				myFlags.bits.bit1
-#define IS100MS				myFlags.bits.bit2
-
-#define RUN_PID             myFlags.bits.bit4
-
+// =========================================================
+// //BANDERAS
+// =========================================================
+#define ALLFLAGS            myFlags.bytes       // Acceso a bytes completos de las banderas
+#define IS10MS              myFlags.bits.bit0   // Bandera de ciclo de 10ms activo
+#define IS20MS              myFlags.bits.bit1   // Bandera de ciclo de 20ms activo
+#define IS100MS             myFlags.bits.bit2   // Bandera de ciclo de 100ms activo
+#define RUN_PID             myFlags.bits.bit4   // Bandera para ejecutar PID balancín
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -138,229 +197,215 @@ TIM_HandleTypeDef htim4;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-uint32_t heartBeatMask[] = {0x55555555, 0xFFFFFFFF, 0x00000000, 0x1, 0x2010080, 0x5F, 0x5, 0x28140A00, 0x15F, 0x15, 0x2A150A08, 0x55F};
+typedef enum {
+    STATE_SWING = 0,          // 1 clic: Solo balanceo estático en el lugar, pantalla off
+    STATE_LINE_FOLLOWING = 1, // 2 clics: Seguimiento de línea activo, pantalla off
+    STATE_DODGE = 2,          // 3 clics: Esquivado de obstáculos activo, pantalla off
+    STATE_FIRST_SCREEN = 3,   // Pulsación 1s: Pantalla RAW (ADC, ACC, GYR), motores off
+    STATE_SECOND_SCREEN = 4   // Pulsación 2s: Pantalla Premium (VEL, ACL, ANG, BAL), motores off
+} _eRobotMode;
 
-const char firmware[] = "EX100923v01\n";
+volatile _eRobotMode robotMode = STATE_LINE_FOLLOWING;
 
-// Tablas de calibración Look-Up Table (LUT) de 16 posiciones
-#define LUT_SIZE 16
+// Variables globales para la detección de clics múltiples
+volatile uint16_t clickTimeout = 0;  // Temporizador para la ventana de multiclic (en ms)
+volatile uint8_t clickCount = 0;    // Contador de clics cortos acumulados
 
-const uint16_t LUT_IR1_IZQ[LUT_SIZE] = {78, 167, 315, 384, 520, 722, 807, 903, 1055, 1327, 1492, 1629, 2213, 2442, 2919, 3682};
-const uint16_t LUT_IR3_CEN[LUT_SIZE] = {149, 298, 459, 622, 868, 1261, 1501, 1720, 2246, 2874, 3261, 3499, 3847, 3875, 3885, 3905};
-const uint16_t LUT_IR5_DER[LUT_SIZE] = {102, 237, 375, 518, 705, 1092, 1255, 1490, 1931, 2501, 2865, 3140, 3826, 3853, 3881, 3892};
-const uint16_t LUT_PROMEDIO[LUT_SIZE] = {109, 234, 383, 508, 697, 1025, 1187, 1371, 1744, 2234, 2539, 2756, 3295, 3390, 3561, 3826};
-const uint16_t LUT_Y_SCALE[16] = {0, 67, 133, 200, 267, 333, 400, 467, 533, 600, 667, 733, 800, 867, 933, 1000};
+// =========================================================
+// //GENERAL
+// =========================================================
+uint32_t heartBeatMask[] = {0x55555555, 0xFFFFFFFF, 0x00000000, 0x1, 0x2010080, 0x5F, 0x5, 0x28140A00, 0x15F, 0x15, 0x2A150A08, 0x55F}; // Máscaras de parpadeo del LED
+const char firmware[] = "EX100923v01\n";             // Versión actual del firmware del microcontrolador
+uint8_t hbIndex = 0;                                  // Índice para seleccionar la máscara del LED (Heartbeat)
+uint8_t time10ms;                                     // Temporizador incremental de 250us para llegar a 10ms
+uint8_t tmo100ms = 10;                                // Temporizador de paciencia para eventos de 100ms
+uint8_t tmo20ms = 2;                                  // Temporizador de paciencia para eventos de 20ms
+uint8_t tmo100 = 5;                                   // Divisor de ciclo para intercalar tareas en I2C
 
-// Alias de compatibilidad
-#define lut_l1 LUT_IR1_IZQ
-#define lut_l2 LUT_IR3_CEN
-#define lut_l3 LUT_IR5_DER
-#define lut_l4 LUT_PROMEDIO
-#define lut_y  LUT_Y_SCALE
+// =========================================================
+// //DISPLAY
+// =========================================================
+volatile uint8_t ssd1306_TxCplt = 0;                  // Bandera indicadora de fin de transmisión I2C por DMA para pantalla
+uint16_t staticOff = 400;                             // Offset estático para dibujo de gráficos
+uint16_t movingOff = 300;                             // Offset móvil para dibujo de gráficos interactivos
 
-// Mapeos específicos solicitados por las funciones de interpolación
-#define lut_l1_x LUT_IR1_IZQ
-#define lut_l1_y LUT_Y_SCALE
-#define lut_l2_x LUT_IR3_CEN
-#define lut_l2_y LUT_Y_SCALE
-#define lut_l3_x LUT_IR5_DER
-#define lut_l3_y LUT_Y_SCALE
-#define lut_l4_x LUT_PROMEDIO
-#define lut_l4_y LUT_Y_SCALE
+// =========================================================
+// //MPU
+// =========================================================
+volatile uint8_t mpu6050_RxCplt = 0;                  // Bandera indicadora de recepción I2C por DMA de datos del giroscopio
+int16_t ax = 0;                                       // Lectura cruda del acelerómetro en el eje X
+int16_t ay = 0;                                       // Lectura cruda del acelerómetro en el eje Y
+int16_t az = 0;                                       // Lectura cruda del acelerómetro en el eje Z
+int16_t gx = 0;                                       // Lectura cruda del giroscopio en el eje X
+int16_t gy = 0;                                       // Lectura cruda del giroscopio en el eje Y
+int16_t gz = 0;                                       // Lectura cruda del giroscopio en el eje Z
+volatile int32_t speed = 0;                           // Estimación física de la velocidad lineal en mm/s
+volatile int32_t dynamic_accel = 0;                   // Aceleración lineal filtrada y compensada
 
-// Prototipos de las funciones de interpolación y normalización
-static uint16_t LUT_Interpolate(const uint16_t *x, const uint16_t *lut_y, uint16_t raw);
-void NormalizeLineSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm);
+// =========================================================
+// //I2C
+// =========================================================
+uint8_t Pila[I2CSIZE] = {};                           // Cola de tareas I2C pendientes de despacho
+uint8_t i2cIndex = 0;                                 // Índice circular actual para despacho en la cola I2C
 
-volatile int16_t cal_left_ir = 0;
-volatile int16_t cal_center_ir = 0;
-volatile int16_t cal_right_ir = 0;
+// =========================================================
+// //ADC
+// =========================================================
+uint16_t adcData[8];                                  // Buffer de DMA que almacena los valores crudos del ADC del micro
+uint16_t adcDataTx[8];                                // Copia segura del buffer de ADC para transmisión libre de colisiones
 
-//Tiempos
-uint8_t time10ms;
-uint8_t tmo100ms = 10;
-uint8_t tmo20ms = 2;
-//ADC
-uint16_t adcData[8], adcDataTx[8]; //ADC
+// =========================================================
+// //COMUNICACION
+// =========================================================
+_sComm USBTx;                                         // Estructura de protocolo para el buffer de transmisión USB
+_sComm USBRx;                                         // Estructura de protocolo para el buffer de recepción USB
+_sComm WiFiTx;                                        // Estructura de protocolo para el buffer de transmisión WiFi (ESP-01)
+_sComm WiFiRx;                                        // Estructura de protocolo para el buffer de recepción WiFi (ESP-01)
+volatile uint8_t buffUSBTx[RXBUFSIZE];                // Array de memoria física para buffer de transmisión USB
+volatile uint8_t buffUSBRx[TXBUFSIZE];                // Array de memoria física para buffer de recepción USB
+volatile uint8_t buffWiFiTx[RXBUFSIZE];               // Array de memoria física para buffer de transmisión WiFi
+volatile uint8_t buffWiFiRx[TXBUFSIZE];               // Array de memoria física para buffer de recepción WiFi
+_uWord myWord;                                        // Unión de propósito general para conversión de tipos de datos (2/4 bytes)
 
-//Comunicación
-_sComm USBTx, USBRx;
-_sComm WiFiTx, WiFiRx;
-volatile uint8_t buffUSBTx[RXBUFSIZE];
-volatile uint8_t buffUSBRx[TXBUFSIZE];
-volatile uint8_t buffWiFiTx[RXBUFSIZE];
-volatile uint8_t buffWiFiRx[TXBUFSIZE];
-_uWord myWord;
-//Control
-volatile _uFlag myFlags;
-//Variables pantalla
-volatile uint8_t ssd1306_TxCplt = 0;
-volatile uint8_t mpu6050_RxCplt = 0;
-//mpu6050
-int16_t ax=0, ay=0, az=0;
-int16_t gx=0, gy=0, gz=0;
+// =========================================================
+// //BANDERAS
+// =========================================================
+volatile _uFlag myFlags;                              // Banderas de ciclo de tareas del sistema en tiempo real
+_eDMA myDMA;                                          // Estado actual de control del bus DMA
 
+// =========================================================
+// //MOTORES
+// =========================================================
+uint16_t lPulse1 = 0;                                 // Ancho de pulso PWM para Motor Izquierdo Adelante
+uint16_t rPulse2 = 0;                                 // Ancho de pulso PWM para Motor Derecho Adelante
+uint16_t lPulse3 = 0;                                 // Ancho de pulso PWM para Motor Izquierdo Atrás
+uint16_t rPulse4 = 0;                                 // Ancho de pulso PWM para Motor Derecho Atrás
 
-//i2c
-uint8_t Pila[I2CSIZE] = {};
-uint8_t i2cIndex = 0;
+// =========================================================
+// //WIFI
+// =========================================================
+uint8_t timerUDP = 0;                                 // Temporizador para vigilar transmisión periódica UDP
+uint8_t udpSilenceCounter = 5;                        // Contador de silencio UDP (manda ALIVEs autónomos en ausencia de comandos)
+uint8_t byteUART_ESP01;                               // Byte de almacenamiento de interrupción UART para WiFi
+_sESP01Handle esp01Handler;                           // Estructura de llamadas y control del módulo Wi-Fi
+_sButton myButton;                                    // Estructura de estado físico del botón de configuración
 
-_eDMA myDMA;
+// =========================================================
+// //WEBSERVER
+// =========================================================
+static char httpBuf[HTTP_BUF_SIZE];                   // Buffer para acumular el request del servidor web local
+static uint8_t httpBufIdx = 0;                        // Índice actual en el buffer HTTP (0xFF indica petición lista)
+static uint8_t isWebserverMode = 0;                   // Estado bandera del modo Webserver activo (1 = activo, 0 = inactivo)
+static uint8_t httpTxBuf[340];                        // Buffer de transmisión compartido para respuestas HTML
+static char udpTargetIP[16] = "192.168.0.10";         // Dirección IP de destino UDP para envío de telemetría
+static uint16_t udpTargetPort = 30010;                // Puerto de destino UDP de la aplicación de escritorio
+static uint8_t udpReadyToStart = 0;                   // Bandera que indica que el socket UDP está listo para despachar
 
-uint8_t tmo100 = 5;
-
-// Variables crudas de 16 bits para el PWM de cada motor (0 a 9999)
-uint16_t lPulse1 = 0;
-uint16_t rPulse2 = 0;
-uint16_t lPulse3 = 0;
-uint16_t rPulse4 = 0;
-
-uint8_t hbIndex = 0;
-
-volatile uint8_t displayScreen = 0;
-volatile int32_t speed = 0;
-volatile int32_t dynamic_accel = 0;
-
-//Wifi
-uint8_t timerUDP = 0;
-uint8_t udpSilenceCounter = 5; // Comienza en 5 para enviar ALIVEs desde el arranque. Se resetea al recibir comandos WiFi.
-uint8_t byteUART_ESP01;
-_sESP01Handle esp01Handler;
-_sButton myButton;
-
-/* ---- WEBSERVER ---- */
-static char    httpBuf[HTTP_BUF_SIZE];
-static uint8_t httpBufIdx = 0;          /* 0..N = acumulando | 0xFF = primera linea lista */
-static uint8_t isWebserverMode = 0;     /* 1 = modo webserver activo */
-
-/* Buffer unico compartido para todas las respuestas HTTP.
- * Nunca se usan sendHTMLForm y sendHTTPOKPage al mismo tiempo,
- * por lo que un solo buffer alcanza. Tamaño = respuesta mas grande (formulario). */
-static uint8_t httpTxBuf[340];
-
-/* ---- Destino UDP (guardado desde el formulario web) ---- */
-static char    udpTargetIP[16]   = "192.168.0.10";
-static uint16_t udpTargetPort    = 30010;
-static uint8_t  udpReadyToStart  = 0;
-
-/* ---- TABLA DE REDES CONOCIDAS ---- */
-typedef struct {
-	const char *ssid;
-	const char *password;
-	const char *targetIP;
-} _sWiFiNetwork;
-
+// =========================================================
+// //REDES
+// =========================================================
 static const _sWiFiNetwork knownNetworks[] = {
 	{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.10"   },
 	{ "FCAL",    "fcalconcordia.06-2019",    "172.23.190.89"  },
 	{ "SA04",    "12345678",                "10.93.92.213"   },
 	{ "InternetPlus_872f10_EXT", "wlan78d0ef", "192.168.1.52" },
-};
+};                                                    // Base de datos local de redes Wi-Fi a las cuales autoconectarse
 
-static uint8_t  currentNetworkIdx  = 0;   /* Indice de la red que estamos intentando */
-static uint8_t  networkScanActive  = 0;   /* 1 = estamos escaneando redes */
-static uint8_t  networkRetryCount  = 0;   /* Reintentos por red antes de pasar a la siguiente */
-static uint16_t networkScanTimer = SCANTIME;
+static uint8_t currentNetworkIdx = 0;                 // Red actual en intento de conexión por el escáner
+static uint8_t networkScanActive = 0;                 // Bandera indicadora de escáner de redes activo
+static uint8_t networkRetryCount = 0;                 // Contador de intentos de conexión para la red actual
+static uint16_t networkScanTimer = SCANTIME;          // Temporizador de permanencia en escaneo de red en milisegundos
 
-//////VARIABLES DE LOS SISTEMAS DE CONTROL//////
-//variables internas
-int32_t acc_angle_hr = 0;
-int32_t gyro_delta_hr = 0;
-int32_t current_angle_hr = 0;
-int32_t error = 0;
-int32_t last_error = 0;
-int32_t derivative = 0;
-int32_t integral = 0;
-int32_t output = 0;
-int32_t current_angle = 0; // Escala x100 (ej: 150 = 1.5 grados)
-int32_t measured_dt_ms = 20; // Delta de tiempo dinámico medido en ms
-//filtros de acc
-int32_t ax_filt = 0;
-int32_t az_filt = 0;
+// =========================================================
+// //SENSORES
+// =========================================================
+const uint16_t LUT_IR1_IZQ[LUT_SIZE] = {78, 167, 315, 384, 520, 722, 807, 903, 1055, 1327, 1492, 1629, 2213, 2442, 2919, 3682}; // LUT del sensor IR izquierdo
+const uint16_t LUT_IR3_CEN[LUT_SIZE] = {149, 298, 459, 622, 868, 1261, 1501, 1720, 2246, 2874, 3261, 3499, 3847, 3875, 3885, 3905}; // LUT del sensor IR central
+const uint16_t LUT_IR5_DER[LUT_SIZE] = {102, 237, 375, 518, 705, 1092, 1255, 1490, 1931, 2501, 2865, 3140, 3826, 3853, 3881, 3892}; // LUT del sensor IR derecho
+const uint16_t LUT_PROMEDIO[LUT_SIZE] = {109, 234, 383, 508, 697, 1025, 1187, 1371, 1744, 2234, 2539, 2756, 3295, 3390, 3561, 3826}; // LUT de calibración promedio
+const uint16_t LUT_Y_SCALE[16] = {0, 67, 133, 200, 267, 333, 400, 467, 533, 600, 667, 733, 800, 867, 933, 1000}; // Escala normalizada de salida (0 = Blanco, 1000 = Negro)
 
-//Variables externas PID
-int16_t Kp_stable = 75; //75
-int16_t Kd_stable = 8; //8
-int16_t Ki_stable = 0;
-// Pasan a ser de 16 bits. minPWM centrado en 735.
-uint16_t maxPWM    = 9999;
-uint16_t minPWM_Left  = 870;
-uint16_t minPWM_Right = 1000;
-uint16_t PWM_LRot = 880;
-uint16_t PWM_RRot = 800;
+volatile int16_t cal_left_ir = 0;                     // Lectura calibrada del sensor IR izquierdo (Der-Raw en telemetría)
+volatile int16_t cal_center_ir = 0;                   // Lectura calibrada del sensor IR central (Cen-Raw en telemetría)
+volatile int16_t cal_right_ir = 0;                    // Lectura calibrada del sensor IR derecho (Izq-Raw en telemetría)
 
-// Offsets que garantizan exactamente los 70 puntos de diferencia
-int16_t offset_left = 0;
-int16_t offset_right = 0; //70
+// Prototipos de funciones de calibración asociadas
+static uint16_t LUT_Interpolate(const uint16_t *x, const uint16_t *lut_y, uint16_t raw);
+void NormalizeLineSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm);
 
-int32_t setpoint = 50; // Setpoint estatico, angulo unico de trabajo (x100 = 0.5°), ajustable por SETLINECTRL
+// =========================================================
+// //PID
+// =========================================================
+int32_t acc_angle_hr = 0;                             // Ángulo del acelerómetro de alta resolución
+int32_t gyro_delta_hr = 0;                            // Incremento angular de alta resolución calculado del giroscopio
+int32_t current_angle_hr = 0;                         // Ángulo complementario filtrado de alta resolución
+int32_t current_angle = 0;                            // Ángulo complementario de salida del robot en escala x100
+int32_t measured_dt_ms = 20;                          // Delta de tiempo real medido en ms de ejecución del bucle
+int32_t ax_filt = 0;                                  // Aceleración filtrada en el eje X
+int32_t az_filt = 0;                                  // Aceleración filtrada en el eje Z
 
-// Variables del Control de Línea
-int16_t Kp_line = 250; // Proporcional para reacción del volante (60 es un buen inicio)
-int16_t Kq_line = 15; // Derivativo para suavizar el giro y evitar oscilaciones
-int32_t sum_sensors = 0;
-int32_t error_linea = 0;
-int32_t abs_error = 0;
-int32_t linear_term = 0;
-int32_t quad_term = 0;
-int32_t turn_offset = 0;
-int32_t last_line_error = 0;
-// Variables escaladas (custom_turn maneja valores escalados x100)
-int16_t custom_turn = 1; // 15000 / 100 = 150 de PWM real para giro en búsqueda
-int16_t attack_setpoint = -1050; // Inclinación de 2.0° para un avance muy sutil
-int16_t brake_angle_div = 4; //Valor menor aumenta la velocidad en curvas
-int32_t angle_limit = 2000;  // Límite de inclinación (x100 = 20.00°)
-int16_t turn_divisor = 8;    // Divisor para el cálculo de turn_offset
-int16_t save_min = -2000;        // Anti-collapse fallback setpoint (backward recovery)
-int16_t save_max = 2000;        // Anti-collapse fallback setpoint (forward recovery)
+int32_t error = 0;                                    // Diferencia entre setpoint y ángulo actual
+int32_t last_error = 0;                               // Error del ciclo PID inmediatamente anterior para cálculo derivativo
+int32_t derivative = 0;                               // Componente derivativo del lazo PID
+int32_t integral = 0;                                 // Componente acumulativo integral del lazo PID
+int32_t output = 0;                                   // Acción de control total del lazo de equilibrio inyectada a los motores
 
-int16_t vel_damp_div = 500;
-int16_t vel_damp_limit = 100;
-int16_t turn_limit = 1000;
-//Control de velocidad
-int32_t vel_estimate  = 0;
-int16_t vel_decay     = 98;
-int16_t vel_setpoint_gain = 10;
-int16_t vel_limit     = 500;
+int16_t Kp_stable = 175;                              // Ganancia proporcional de equilibrio estático
+int16_t Kd_stable = 50;                               // Ganancia derivativa de equilibrio estático
+int16_t Ki_stable = 0;                                // Ganancia integral de equilibrio estático
 
-// Variables para compensación de rotación en velocidad
-int32_t ax_fast      = 0;   // Filtro rápido de ax para velocidad
-int16_t ax_offset    = 0;   // Offset de calibración del acelerómetro
+uint16_t maxPWM = 9999;                               // Ciclo de trabajo máximo permitido (100%)
+uint16_t minPWM_Left = 870;                           // PWM mínimo que vence la fricción estática de la rueda izquierda
+uint16_t minPWM_Right = 1000;                         // PWM mínimo que vence la fricción estática de la rueda derecha
+uint16_t PWM_LRot = 880;                              // PWM estático de pivote de giro en búsqueda para rueda izquierda
+uint16_t PWM_RRot = 800;                              // PWM estático de pivote de giro en búsqueda para rueda derecha
+int16_t offset_left = 0;                              // Offset para compensación de deriva de tracción del motor izquierdo
+int16_t offset_right = 0;                             // Offset para compensación de deriva de tracción del motor derecho
 
-// --- Estado del seguidor de línea ---
-typedef enum {
-    LINE_SEARCHING,  // Todo blanco
-    LINE_FOLLOWING,  // Seguimiento normal
-	LINE_LOST,
-    LINE_CROSS       // Todo negro (Intersección en T)
-} _eLineState;
+int32_t setpoint = 50;                                // Setpoint de equilibrio estático base (x100 = 0.5°) ajustable por Qt
+int16_t attack_setpoint = -1200;                      // Setpoint de inclinación frontal para ataque (configurable por Qt)
+int16_t recovery_trigger_angle = -1500;               // Ángulo de inclinación que dispara la recuperación (configurable por Qt, x100 = -15.00°)
+int16_t recovery_target_angle = -500;                 // Ángulo al que se recupera durante la ventana de 250ms (configurable por Qt, x100 = -5.00°)
 
-_eLineState lineState = LINE_SEARCHING;
+// =========================================================
+// //SEGUIDOR
+// =========================================================
+int16_t Kp_line = 250;                                // Ganancia proporcional de guiñada para corrección rápida sobre la línea
+int16_t Kq_line = 15;                                 // Ganancia derivativa/cuadrática de guiñada para atenuar oscilaciones
+int32_t sum_sensors = 0;                              // Suma de lecturas normalizadas de los sensores de línea activos
+int32_t error_linea = 0;                              // Desviación calculada de la línea (eje horizontal de error)
+int32_t abs_error = 0;                                // Valor absoluto del error de línea
+int32_t linear_term = 0;                              // Aporte proporcional del control de dirección
+int32_t quad_term = 0;                                // Aporte cuadrático/derivativo del control de dirección
+int32_t turn_offset = 0;                              // Fuerza de rotación mezclada con el PID y enviada a los motores (Yaw)
+int32_t last_line_error = 0;                          // Error de línea del ciclo anterior
+int16_t custom_turn = 1;                              // Intensidad de giro prefijada para fases ciegas de búsqueda
+int16_t turn_divisor = 4;                             // Divisor del esfuerzo de giro para atenuar la severidad del desvío
+int16_t vel_damp_div = 500;                           // Divisor del término amortiguador de velocidad
+int16_t vel_damp_limit = 100;                         // Límite del amortiguador de velocidad
+int16_t turn_limit = 1000;                            // Límite superior absoluto del esfuerzo de giro motor (Yaw)
 
+int32_t vel_estimate = 0;                             // Estimación física de la velocidad inercial
+int16_t vel_decay = 98;                               // Factor de decaimiento del filtro inercial de velocidad
+int16_t vel_setpoint_gain = 10;                       // Ganancia del control del setpoint por velocidad
+int16_t vel_limit = 500;                              // Límite de velocidad permitida para las estimaciones
+int32_t ax_fast = 0;                                  // Filtro rápido de aceleración X para control inercial
+int16_t ax_offset = 0;                                // Offset calibrado de gravedad en reposo del acelerómetro X
 
-uint8_t line_lost_timer = 0;
-uint8_t line_lost_phase = 0;
+_eLineState lineState = LINE_SEARCHING;               // Estado actual de la máquina del seguidor de línea
+uint8_t line_lost_timer = 0;                          // Temporizador en ciclos transcurridos desde que se perdió la pista
+uint8_t line_lost_phase = 0;                          // Fase de búsqueda secuencial actual (fase 0, 1 o 2)
 
-// --- Estado del esquivador de objetos ---
-typedef enum {
-    OBS_IDLE,       // Sin obstáculo, seguimiento de línea normal
-    OBS_APPROACH,   // Obstáculo detectado frontalmente, para y decide lado
-    OBS_CORNER,     // Gestiona las esquinas: rota hasta que sensor 45° toma la pared
-    OBS_WALL        // Avanza siguiendo la pared con sensor lateral
-} _eObsState;
-
-
-uint16_t obs_detect_dist  = 1000;  // Distancia frontal de detección de obstáculo
-uint16_t obs_corner_dist  = 800;   // Valor que tiene que tomar el sensor 45° para confirmar esquina tomada
-uint16_t obs_lost_dist    = 400;   // Lateral por debajo de este valor = pared terminada
-uint16_t obs_side_dist    = 1000;  // Distancia lateral de referencia para seguir la pared
-uint16_t obs_stop_cycles  = 10;    // Ciclos de parada antes de rotar (200ms con DT=20ms)
-// NUEVA VARIABLE:
-uint16_t obs_align_dist   = 2500;   // Valor 'x' deseado para el sensor lateral al rotar 90°
-
-uint16_t staticOff = 400;
-uint16_t movingOff = 300;
-
+// =========================================================
+// //OBSTACULO
+// =========================================================
+_eObsState obsState = OBS_IDLE;                       // Estado actual del esquivador de obstáculos
+uint16_t obs_detect_dist = 1000;                      // Distancia frontal de detección en mm
+uint16_t obs_corner_dist = 800;                       // Distancia lateral del sensor de 45° para validar esquina
+uint16_t obs_lost_dist = 400;                         // Distancia mínima lateral por debajo de la cual la pared terminó
+uint16_t obs_side_dist = 1000;                        // Distancia lateral de referencia deseada para seguir la pared
+uint16_t obs_stop_cycles = 10;                        // Ciclos de inmovilización previa antes de iniciar rotación evasiva
+uint16_t obs_align_dist = 2500;                       // Distancia objetivo del sensor lateral tras rotación de 90°
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -466,9 +511,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 		tmo100--;
 		if(!tmo100){
 			tmo100=5;
-			Pila[i2cIndex] = SSD1306;
-			i2cIndex++;
-			i2cIndex&=(I2CSIZE-1);
+			if (robotMode == STATE_FIRST_SCREEN || robotMode == STATE_SECOND_SCREEN) {
+				Pila[i2cIndex] = SSD1306;
+				i2cIndex++;
+				i2cIndex&=(I2CSIZE-1);
+			}
 		}
 	}
 }
@@ -662,7 +709,6 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
 		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
-		brake_angle_div = myWord.i16[0];
 		break;
 	case SETSTATICOFF:
 		unerPrtcl_PutHeaderOnTx(dataTx, SETSTATICOFF, 2);
@@ -698,7 +744,7 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((setpoint >> 24) & 0xFF));
 
 		// 3. Bloque Seguimiento y Offsets (14 bytes: KpL, KdL, OffL, OffR, Turn, Attack, Brake)
-		int16_t params_ext[7] = { Kp_line, Kq_line, offset_left, offset_right, custom_turn, attack_setpoint, brake_angle_div };
+		int16_t params_ext[7] = { Kp_line, Kq_line, offset_left, offset_right, custom_turn, attack_setpoint, 0 };
 		for (int i = 0; i < 7; i++) {
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (params_ext[i] & 0xFF));
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((params_ext[i] >> 8) & 0xFF));
@@ -719,14 +765,14 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		}
 
 		// 6. Nuevos Parámetros (4 bytes: angle_limit, turn_divisor)
-		int16_t new_params[2] = { (int16_t)angle_limit, turn_divisor };
+		int16_t new_params[2] = { 0, turn_divisor };
 		for (int i = 0; i < 2; i++) {
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (new_params[i] & 0xFF));
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((new_params[i] >> 8) & 0xFF));
 		}
 
-		// 7. Anti-collapse Setpoints (4 bytes: save_min, save_max)
-		int16_t save_params[2] = { save_min, save_max };
+		// 7. Anti-collapse Setpoints (4 bytes: save_min, save_max) -> Ahora dinámicos de recuperación
+		int16_t save_params[2] = { recovery_trigger_angle, recovery_target_angle };
 		for (int i = 0; i < 2; i++) {
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (save_params[i] & 0xFF));
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((save_params[i] >> 8) & 0xFF));
@@ -909,7 +955,6 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
 		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
-		angle_limit = (int32_t)myWord.i16[0];
 		break;
 	case SETPOINTSAVEMIN:
 		unerPrtcl_PutHeaderOnTx(dataTx, SETPOINTSAVEMIN, 2);
@@ -917,7 +962,7 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
 		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
-		save_min = myWord.i16[0];
+		recovery_trigger_angle = myWord.i16[0];
 		break;
 	case SETPOINTSAVEMAX:
 		unerPrtcl_PutHeaderOnTx(dataTx, SETPOINTSAVEMAX, 2);
@@ -925,7 +970,7 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
 		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
-		save_max = myWord.i16[0];
+		recovery_target_angle = myWord.i16[0];
 		break;
 	case SETVELDAMPDIV:
 		unerPrtcl_PutHeaderOnTx(dataTx, SETVELDAMPDIV, 2);
@@ -980,6 +1025,36 @@ void do10ms() {
 		tmo20ms--;
 		ESP01_Timeout10ms();
 		buttonTimeout10ms(&myButton);
+
+		/* Control de ventana de clics múltiples */
+		if (clickTimeout > 0) {
+			if (clickTimeout >= 10) {
+				clickTimeout -= 10;
+			} else {
+				clickTimeout = 0;
+			}
+
+			if (clickTimeout == 0 && clickCount > 0) {
+				// Ventana terminada: limpiar pantalla a negro síncrono por hardware antes de apagar
+				ssd1306_Fill(Black);
+				ssd1306_UpdateScreen();
+				ssd1306_SetDisplayOn(0); // Apagar físicamente la pantalla
+
+				if (clickCount == 1) {
+					robotMode = STATE_SWING;
+					hbIndex = 3; // LED rápido
+				}
+				else if (clickCount == 2) {
+					robotMode = STATE_LINE_FOLLOWING;
+					hbIndex = 2; // LED de carrera
+				}
+				else if (clickCount == 3) {
+					robotMode = STATE_DODGE;
+					hbIndex = 5; // LED alternativo
+				}
+				clickCount = 0; // Resetear contador
+			}
+		}
 
 		/* Lógica de escaneo autónomo y cíclico de redes */
 		if (networkScanActive) {
@@ -1080,7 +1155,7 @@ void ssd1306Data() {
 	char data[32];
 	uint8_t y = 0, x = 2;
 
-	if (displayScreen == 0) {
+	if (robotMode == STATE_FIRST_SCREEN) {
 		ssd1306_Fill(White);
 
 		ssd1306_FillRectangle(30, 0, 32, 64, Black);
@@ -1175,14 +1250,14 @@ void ssd1306Data() {
 		snprintf(data, sizeof(data), "%ld.%02ld", ang_whole, ang_frac);
 		ssd1306_WriteString(data, Font_7x10, White);
 
-		// Row 4: LIN: <SIGUE LINEA / NO SIGUE>
+		// Row 4: BAL: <BALANCING / CAIDO> (si se esta balanceando o no)
 		ssd1306_SetCursor(2, 47);
-		ssd1306_WriteString("LIN:", Font_7x10, White);
+		ssd1306_WriteString("BAL:", Font_7x10, White);
 		ssd1306_SetCursor(36, 47);
-		if (lineState == LINE_FOLLOWING) {
-			ssd1306_WriteString("SIGUE LINEA", Font_7x10, White);
+		if (current_angle < ANG45 && current_angle > -ANG45) {
+			ssd1306_WriteString("BALANCING", Font_7x10, White);
 		} else {
-			ssd1306_WriteString("NO SIGUE", Font_7x10, White);
+			ssd1306_WriteString("CAIDO", Font_7x10, White);
 		}
 
 		// Horizontal dividing lines in White
@@ -1634,15 +1709,30 @@ void buttonTimeout10ms(_sButton *button){
 }
 
 void buttonTask(_sButton *button){
-	if((!button->isPressed) && (button->time > T100MS) && (button->time<T1000MS)){
-		hbIndex = 1;
-		displayScreen = !displayScreen; // Alterna la pantalla
-		button->time = 0; //limpiamos el valor para que no pueda volver a entrar en esta parte
-	}
-	if((!button->isPressed) && (button->time > T1000MS)){
-		hbIndex = 0;
-		displayScreen = !displayScreen; // Alterna la pantalla
-		button->time = 0;
+	// Solo tomamos decisiones al soltar el botón
+	if (!button->isPressed && button->time > 0) {
+		if (button->time >= T2000MS) {
+			// Pulsación >= 2s -> STATE_SECOND_SCREEN
+			robotMode = STATE_SECOND_SCREEN;
+			ssd1306_SetDisplayOn(1); // Encender pantalla
+			hbIndex = 0;
+			clickCount = 0;          // Abortar clics cortos pendientes
+			clickTimeout = 0;
+		}
+		else if (button->time >= T1000MS && button->time < T2000MS) {
+			// Pulsación >= 1s -> STATE_FIRST_SCREEN
+			robotMode = STATE_FIRST_SCREEN;
+			ssd1306_SetDisplayOn(1); // Encender pantalla
+			hbIndex = 1;
+			clickCount = 0;          // Abortar clics cortos pendientes
+			clickTimeout = 0;
+		}
+		else if (button->time > T100MS && button->time < T1000MS) {
+			// Clic corto detectado -> Sumar al contador y arrancar ventana de 400ms
+			clickCount++;
+			clickTimeout = T400MS; 
+		}
+		button->time = 0; // Limpiar acumulador
 	}
 }
 
@@ -1655,11 +1745,6 @@ void PID_ControlTask(void) {
 	static uint32_t last_cycle_time = 0;
 	static uint16_t line_lost_debounce_count = 0;
 	static int32_t last_turn_offset = 0;
-	// --- Control Avanzado LINE_FOLLOWING ---
-	static int32_t  sp_filt          = 0;    // Filtro LPF del target_setpoint para evitar falsos disparos
-	static uint16_t low_angle_count  = 0;    // Contador de ciclos con ángulo insuficiente (< ANG7)
-	static uint16_t boost_count      = 0;    // Contador de ciclos restantes de impulso a -ANG14
-	static uint16_t stab_count       = 0;    // Contador de ciclos restantes de estabilización (freno)
 	uint32_t current_cycle_time = DWT->CYCCNT;
 
 	uint32_t dt_us = 20000; // Por defecto nominal de 20ms en el primer ciclo
@@ -1679,13 +1764,11 @@ void PID_ControlTask(void) {
 	// =========================================================
 	// --- 1. LECTURA DIRECTA DE SENSORES DE LÍNEA ---
 	// =========================================================
-	// ASIGNACIÓN FÍSICA DIRECTA (IR1 = Izquierda, IR3 = Centro, IR5 = Derecha):
 	uint16_t raw_left   = adcData[1];
 	uint16_t raw_center = adcData[3];
 	uint16_t raw_right  = adcData[5];
 
-	// --- NORMALIZACIÓN POR LUT (Look-Up Table) ---
-	// Empaquetamos los 3 valores crudos más su promedio en el arreglo raw_sensors[4]
+	// Normalización e interpolación directa por LUT
 	uint16_t raw_sensors[4] = {
 		raw_left,
 		raw_center,
@@ -1694,14 +1777,12 @@ void PID_ControlTask(void) {
 	};
 	
 	uint16_t norm_sensors[4];
-	NormalizeLineSensors(raw_sensors, norm_sensors); // Normalización e interpolación directa
+	NormalizeLineSensors(raw_sensors, norm_sensors);
 
-	// Extracción de los valores ya normalizados listos para el control PID (0 = Blanco, 1000 = Negro)
 	int32_t left_ir   = norm_sensors[0];
 	int32_t center_ir = norm_sensors[1];
 	int32_t right_ir  = norm_sensors[2];
 
-	// Guardar copias globales de los valores calibrados para telemetría (Qt)
 	cal_left_ir   = (int16_t)left_ir;
 	cal_center_ir = (int16_t)center_ir;
 	cal_right_ir  = (int16_t)right_ir;
@@ -1729,18 +1810,16 @@ void PID_ControlTask(void) {
 	current_angle_hr = (ALPHA_GYRO * (current_angle_hr + gyro_delta_hr)
 			+ ALPHA_ACC * acc_angle_hr) / 100;
 
-	// Límites de seguridad de software extremos (+/- 90 grados)
-	if (current_angle_hr > 900000)
-		current_angle_hr = 900000;
-	if (current_angle_hr < -900000)
-		current_angle_hr = -900000;
+	// Límites de seguridad extremos por software (+/- 90 grados)
+	if (current_angle_hr > 900000)  current_angle_hr = 900000;
+	if (current_angle_hr < -900000) current_angle_hr = -900000;
 
 	current_angle = current_angle_hr / 100;
 
 	// =========================================================
-	// --- 3. MÁQUINA DE ESTADOS: SEGUIDOR DE LÍNEA ---
+	// --- 3. MÁQUINA DE ESTADOS: DIRECCIÓN DE SEGUIDOR DE LÍNEA ---
 	// =========================================================
-	int32_t target_setpoint = setpoint;
+	int32_t target_setpoint = setpoint; 
 	turn_offset = 0;
 
 	uint8_t ir1_active = (left_ir > IR_WHITE);
@@ -1748,166 +1827,78 @@ void PID_ControlTask(void) {
 	uint8_t ir5_active = (right_ir > IR_WHITE);
 	uint8_t active_count = ir1_active + ir3_active + ir5_active;
 
+	static uint16_t recovery_cycles = 0; // Contador de ciclos de recuperación de balance estático
 
 	switch (lineState) {
 
 	case LINE_SEARCHING:
+		recovery_cycles = 0; // Resetear temporizador al buscar la línea
 		if (ir3_active) {
 			lineState = LINE_FOLLOWING;
 		} else {
-			target_setpoint = setpoint;
 			turn_offset = -custom_turn;
 		}
 		break;
 
 	case LINE_FOLLOWING:
-			if (active_count == 3 && ir1_active && ir3_active && ir5_active) {
-				lineState = LINE_CROSS;
-				break;
-			}
-
-			if (active_count == 0) {
-				line_lost_debounce_count++;
-				if (line_lost_debounce_count >= 6) { // ~120 ms (6 ciclos de 20ms)
-					line_lost_debounce_count = 0;
-					line_lost_timer = 0;
-					line_lost_phase = 0;
-					lineState = LINE_LOST;
-					break;
-				}
-				// Durante la pausa de debounce, mantenemos la trayectoria previa para seguir avanzando
-				error_linea = last_line_error;
-				turn_offset = last_turn_offset;
-			} else {
-				line_lost_debounce_count = 0;
-
-				error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors)
-						/ 10;
-				abs_error = (error_linea > 0) ? error_linea : -error_linea;
-
-				linear_term = Kp_line * error_linea;
-				quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
-
-				if (turn_divisor == 0) turn_divisor = 1; // Sistema de Seguridad
-				turn_offset = (linear_term + quad_term) / turn_divisor;
-
-				if (turn_offset > turn_limit) {
-					turn_offset = turn_limit;
-				} else if (turn_offset < -turn_limit) {
-					turn_offset = -turn_limit;
-				}
-
-				last_turn_offset = turn_offset;
-			}
-
-			// --- ESTIMACIÓN DE VELOCIDAD CON COMPENSACIÓN DE GRAVEDAD ---
-			ax_fast = (ax * 20 + ax_filt * 80) / 100;
-			int32_t gravity_x = (current_angle_hr * 16384) / 573000;
-			int32_t ax_clean  = ax_fast - gravity_x;
-
-			vel_estimate = (vel_estimate * vel_decay) / 100 + ax_clean;
-
-			if (vel_estimate >  vel_limit) vel_estimate =  vel_limit;
-			if (vel_estimate < -vel_limit) vel_estimate = -vel_limit;
-
-			int32_t vel_correction = -(vel_estimate * vel_setpoint_gain) / 1000;
-			if (vel_correction >  vel_limit) vel_correction =  vel_limit;
-			if (vel_correction < -vel_limit) vel_correction = -vel_limit;
-
-			// --- CONTROL DE VELOCIDAD PURO EN CURVAS ---
-			int32_t abs_turn = (turn_offset > 0) ? turn_offset : -turn_offset;
-			int32_t curve_brake = 0;
-
-			if (brake_angle_div != 0) {
-				curve_brake = abs_turn / brake_angle_div;
-			}
-
-			// CORRECCIÓN: Como attack_setpoint es NEGATIVO, para frenar
-			// debemos SUMAR el curve_brake para que se acerque a 0.
-			target_setpoint = attack_setpoint + curve_brake;
-			target_setpoint += vel_correction;
-
-			// --- LÍMITES DE SEGURIDAD FINAL ---
-			if (target_setpoint > ANG10)
-				target_setpoint = ANG10;
-			if (target_setpoint < -ANG10)
-				target_setpoint = -ANG10;
-
-			// =========================================================
-			// --- CONTROL AVANZADO: BOOST DE ARRANQUE Y FRENO DE SALVACIÓN ---
-			// =========================================================
-
-			// 1. Filtro de paso bajo sobre target_setpoint (evita falsos disparos por vibración)
-			//    sp_filt = 90% histórico + 10% actual
-			if (sp_filt == 0) sp_filt = target_setpoint; // Inicialización en primer uso
-			sp_filt = (sp_filt * 90 + target_setpoint * 10) / 100;
-
-			// 2. FRENO DE SALVACIÓN: Si el ángulo filtrado cae por debajo de -ANG16 (excesivo)
-			//    → frenar inmediatamente, detener seguimiento de línea por 300ms
-			if (stab_count > 0) {
-				// En modo estabilización: setpoint estático, sin giro, esperando que se calme
-				target_setpoint = setpoint;
-				turn_offset = 0;
-				stab_count--;
-				if (stab_count == 0) {
-					// Fin de la estabilización: volver al seguimiento de línea
-					// Reseteamos contadores para que el boost pueda activarse si el ángulo es insuficiente
-					low_angle_count = LOW_ANGLE_CYCLES; // Forzamos boost inmediato al retomar
-					boost_count = 0;
-				}
-				last_line_error = error_linea;
-				break;
-			}
-
-			if (sp_filt < -ANG16) {
-				// Disparar freno de salvación
-				stab_count  = STAB_CYCLES;
-				boost_count = 0;
-				low_angle_count = 0;
-				target_setpoint = setpoint;
-				turn_offset = 0;
-				last_line_error = error_linea;
-				break;
-			}
-
-			// 3. BOOST DE ARRANQUE: Si el ángulo filtrado es insuficiente (> -ANG7, i.e., -7° a 0°)
-			//    acumular contador; al llegar a 500ms → aplicar -ANG14 por 200ms
-			if (boost_count > 0) {
-				// En modo boost: setear impulso de -ANG14, sin giro durante el impulso
-				target_setpoint = -ANG14;
-				turn_offset = 0;
-				boost_count--;
-				if (boost_count == 0) {
-					// Fin del boost: volver al attack_setpoint normal
-					low_angle_count = 0;
-				}
-				last_line_error = error_linea;
-				break;
-			}
-
-			// Acumulación del contador de ángulo insuficiente
-			// sp_filt > -ANG7 significa que el ángulo es MENOS negativo que -7° (demasiado vertical)
-			if (sp_filt > -ANG7) {
-				low_angle_count++;
-				if (low_angle_count >= LOW_ANGLE_CYCLES) {
-					// 500ms con ángulo insuficiente → activar impulso
-					boost_count = BOOST_CYCLES;
-					low_angle_count = 0;
-				}
-			} else {
-				// Ángulo suficiente → reiniciar contador
-				low_angle_count = 0;
-			}
-
-			last_line_error = error_linea;
+		if (active_count == 3 && ir1_active && ir3_active && ir5_active) {
+			lineState = LINE_CROSS;
+			recovery_cycles = 0;
 			break;
+		}
+
+		if (active_count == 0) {
+			line_lost_debounce_count++;
+			if (line_lost_debounce_count >= 6) {
+				line_lost_debounce_count = 0;
+				line_lost_timer = 0;
+				line_lost_phase = 0;
+				lineState = LINE_LOST;
+				recovery_cycles = 0;
+				break;
+			}
+			error_linea = last_line_error;
+			turn_offset = last_turn_offset;
+		} else {
+			line_lost_debounce_count = 0;
+
+			error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors) / 10;
+			abs_error = (error_linea > 0) ? error_linea : -error_linea;
+
+			linear_term = Kp_line * error_linea;
+			quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
+
+			if (turn_divisor == 0) turn_divisor = 1;
+			turn_offset = (linear_term + quad_term) / turn_divisor;
+
+			if (turn_offset > turn_limit)        turn_offset = turn_limit;
+			else if (turn_offset < -turn_limit)  turn_offset = -turn_limit;
+
+			last_turn_offset = turn_offset;
+		}
+		last_line_error = error_linea;
+
+		// Si está activo el temporizador de recuperación de 250ms
+		if (recovery_cycles > 0) {
+			recovery_cycles--;
+			target_setpoint = recovery_target_angle;  // Ángulo de recuperación dinámico de Qt
+		} else {
+			// Si la inclinación frontal supera el límite de gatillo (numéricamente menor al trigger de recuperación)
+			if (current_angle < recovery_trigger_angle) {
+				recovery_cycles = 12;       // Iniciar periodo de recuperación de ~250 ms (12 ciclos x 20ms = 240ms)
+				target_setpoint = recovery_target_angle;  // Ángulo de recuperación dinámico inmediato
+			} else {
+				target_setpoint = attack_setpoint;  // En condiciones normales, setear el ángulo de ataque dinámico de Qt
+			}
+		}
+		break;
+
 	case LINE_LOST:
+		recovery_cycles = 0; // Resetear temporizador al perder la línea
 		if (ir3_active) {
 			lineState = LINE_FOLLOWING;
 			break;
 		}
-
-		target_setpoint = 0; // Equilibrio vertical en ráfaga de búsqueda
 
 		if (line_lost_phase == 0) {
 			turn_offset = (last_line_error > 0) ? custom_turn : -custom_turn;
@@ -1929,53 +1920,34 @@ void PID_ControlTask(void) {
 		break;
 
 	case LINE_CROSS:
+		recovery_cycles = 0; // Resetear temporizador al cruzar
 		if (active_count < 3) {
 			lineState = LINE_FOLLOWING;
 			break;
 		}
-		target_setpoint = attack_setpoint;
 		break;
 
 	default:
+		recovery_cycles = 0;
 		lineState = LINE_SEARCHING;
 		break;
 	}
 
+	// Forzar balanceo estático en el lugar en modo STATE_SWING (evitar giros)
+	if (robotMode == STATE_SWING) {
+		turn_offset = 0;
+	}
+
 	// =========================================================
-	// --- 4. LAZO PID CENTRAL (Equilibrio) ---
+	// --- 4. LAZO PID CENTRAL (Equilibrio Balancín Puro) ---
 	// =========================================================
-
-
-	// --- UMBRAL DINÁMICO TRASERO ---
-	// Si está siguiendo línea usa ANG20, si no (búsqueda/perdido) usa ANG10
-	int32_t back_trigger = (lineState == LINE_FOLLOWING) ? ANG15 : ANG10;
-
-	// --- SISTEMA DE CONTRASETPOINT POR CAÍDA ---
-	// 1. Evaluamos primero el caso extremo positivo para que no quede bloqueado
-	if (current_angle > angle_limit) {
-		target_setpoint = angle_limit;
-		integral = 0;
-	}
-	// 2. Evaluamos el caso frontal normal (ANG2)
-	else if (current_angle > ANG2) {
-		target_setpoint = save_min;
-		integral = 0;
-	}
-	// 3. Evaluamos la caída trasera con el umbral dinámico
-	else if (current_angle < -back_trigger) {
-		target_setpoint = save_max;
-		integral = 0;
-	}
-
 	error = target_setpoint - current_angle;
 	derivative = (int32_t)(((int64_t)(error - last_error) * 1000000LL) / dt_us);
 
 	if (error > -150 && error < 150) {
 		integral += (error * (int32_t)dt_us) / 1000;
-		if (integral > (ANG20 * 20))
-			integral = (ANG20 * 20);
-		if (integral < -(ANG20 * 20))
-			integral = -(ANG20 * 20);
+		if (integral > (ANG20 * 20))  integral = (ANG20 * 20);
+		if (integral < -(ANG20 * 20)) integral = -(ANG20 * 20);
 	} else {
 		integral = (integral * 8) / 10;
 	}
@@ -1985,7 +1957,7 @@ void PID_ControlTask(void) {
 	last_error = error;
 
 	// =========================================================
-	// --- 5 & 6. MIXER DIRECCIONAL Y SATURACIÓN ---
+	// --- 5. MEZCLA DE MOTORES (Potencia de salida) ---
 	// =========================================================
 	int32_t pwm_left = 0;
 	int32_t pwm_right = 0;
@@ -1993,22 +1965,17 @@ void PID_ControlTask(void) {
 	uint8_t is_rotating = (lineState == LINE_LOST || lineState == LINE_SEARCHING);
 
 	if (is_rotating) {
-		// --- MODO PIVOTE SEGURO ---
+		// Modo pivote seguro
 		int32_t raw_L = output + turn_offset;
 		int32_t raw_R = output - turn_offset;
 
-		if (raw_L > 0)
-			pwm_left = raw_L + PWM_LRot + offset_left;
-		else if (raw_L < 0)
-			pwm_left = raw_L - PWM_LRot - offset_left;
+		if (raw_L > 0)       pwm_left = raw_L + PWM_LRot + offset_left;
+		else if (raw_L < 0)  pwm_left = raw_L - PWM_LRot - offset_left;
 
-		if (raw_R > 0)
-			pwm_right = raw_R + PWM_RRot + offset_right;
-		else if (raw_R < 0)
-			pwm_right = raw_R - PWM_RRot - offset_right;
-
+		if (raw_R > 0)       pwm_right = raw_R + PWM_RRot + offset_right;
+		else if (raw_R < 0)  pwm_right = raw_R - PWM_RRot - offset_right;
 	} else {
-		// --- MODO AVANCE NORMAL ---
+		// Modo avance normal
 		if (output > 0) {
 			pwm_left = output + minPWM_Left + offset_left;
 			pwm_right = output + minPWM_Right + offset_right;
@@ -2028,16 +1995,13 @@ void PID_ControlTask(void) {
 		}
 	}
 
-	// Integración de velocidad usando acelerómetro MPU6050 y compensación de gravedad
-	// 1g = 16384 LSB. 1 grado = 16384 * sin(1°) ≈ 286 LSB.
-	// current_angle está en grados * 100.
+	// Integración de velocidad (estimación interna de telemetría)
 	static uint16_t calib_cycle = 0;
 	static int32_t ax_calib_sum = 0;
 	static int32_t last_gz_filt = 0;
 	static int32_t gx_filt = 0, gy_filt = 0, gz_filt = 0;
 	static int32_t ax_tele_filt = 0;
 
-	// Filtro pasa-bajos para el giroscopio para eliminar ruido de vibración de alta frecuencia (motores)
 	if (gx_filt == 0 && gy_filt == 0 && gz_filt == 0) {
 		gx_filt = gx;
 		gy_filt = gy;
@@ -2048,8 +2012,6 @@ void PID_ControlTask(void) {
 		gz_filt = (gz * 10 + gz_filt * 90) / 100;
 	}
 
-	// Filtro pasa-bajos rápido de baja latencia para la telemetría (20ms constante de tiempo)
-	// Evita el desfase temporal con la gravedad compensada que causaba falsas integraciones
 	if (ax_tele_filt == 0) {
 		ax_tele_filt = ax;
 	} else {
@@ -2063,9 +2025,6 @@ void PID_ControlTask(void) {
 	int32_t gravity_comp = linear_part - cubic_part;
 
 	if (calib_cycle < 150) {
-		// Durante la fase de estabilización inicial (primeros 40 ciclos / 800ms)
-		// forzamos al filtro y al ángulo complementario a acoplarse de forma instantánea
-		// al valor real de los sensores para eliminar el retardo (lag) de arranque.
 		if (calib_cycle < 40) {
 			ax_filt = ax;
 			az_filt = az;
@@ -2083,8 +2042,6 @@ void PID_ControlTask(void) {
 			ax_tele_filt = ax;
 		}
 
-		// Calibración automática durante los primeros 3 segundos de encendido (150 ciclos de 20ms)
-		// Esperamos 50 ciclos para que el filtro ax_filt se estabilice tras arrancar.
 		if (calib_cycle >= 50) {
 			ax_calib_sum += (ax_tele_filt - gravity_comp);
 		}
@@ -2096,63 +2053,60 @@ void PID_ControlTask(void) {
 		speed = 0;
 		last_gz_filt = gz_filt;
 	} else {
-		// Velocidades angulares filtradas en LSB
-		int32_t rot_Y_sq = (int32_t)gy_filt * gy_filt; // Cabeceo^2
-		int32_t rot_Z_sq = (int32_t)gz_filt * gz_filt; // Guiñada^2
-		int32_t rot_XY   = (int32_t)gx_filt * gy_filt; // Acoplamiento balanceo-cabeceo
-
-		// Aceleración angular en Z (Derivada del giro filtrado en Z por paso de tiempo)
+		int32_t rot_Y_sq = (int32_t)gy_filt * gy_filt;
+		int32_t rot_Z_sq = (int32_t)gz_filt * gz_filt;
+		int32_t rot_XY   = (int32_t)gx_filt * gy_filt;
 		int32_t alpha_z = gz_filt - last_gz_filt;
 		last_gz_filt = gz_filt;
 
-		// Compensación de Fuerzas Parásitas por Desplazamiento del sensor (Frente = 1.5 cm, Izquierda = 1.5 cm)
-		// Divisores calibrados usando las distancias físicas reales del robot del usuario
 		int32_t rx_centrifugal = (rot_Y_sq + rot_Z_sq) / 2249000;
 		int32_t ry_centrifugal = rot_XY / 2249000;
 		int32_t ry_tangential  = alpha_z / 6;
 
-		// Operación normal: Sustraemos la gravedad (corregida con signo -), el offset estático y los componentes parásitos tridimensionales
 		dynamic_accel = ax_tele_filt - ax_offset - gravity_comp - rx_centrifugal + ry_centrifugal + ry_tangential;
 
-		// Puerta de ruido (deadband fino) para evitar micro-derivas acumulativas por vibración remanente de los motores
 		int32_t accel_for_integration = dynamic_accel;
 		if (accel_for_integration > -1300 && accel_for_integration < 1300) {
 			accel_for_integration = 0;
 		}
 
-		// Integración física en mm/s (con DT_MS = 20ms)
 		speed = (speed * 98) / 100 + (int32_t)(((int64_t)accel_for_integration * dt_us * 3LL) / 5000000LL);
 	}
 
-	// Apagado de emergencia por caída estructural
+	// =========================================================
+	// --- 6. PROTECCIÓN ABSOLUTA Y APAGADO POR CAÍDA (> 45°) ---
+	// =========================================================
 	if (current_angle > ANG45 || current_angle < -ANG45) {
 		pwm_left = 0;
 		pwm_right = 0;
 		integral = 0;
-		speed = 0; // Reset de velocidad al caer
+		speed = 0;
 	}
 
-	// Silenciado de motores durante los primeros 3 segundos (150 ciclos) para calibración estática sin vibración
+	// Silenciado de motores durante calibración inicial (primeros 3 segundos)
 	if (calib_cycle < 150) {
 		pwm_left = 0;
 		pwm_right = 0;
 		integral = 0;
 	}
 
-	// Saturación Final
-	if (pwm_left > (int32_t) maxPWM)
-		pwm_left = (int32_t) maxPWM;
-	if (pwm_left < -(int32_t) maxPWM)
-		pwm_left = -(int32_t) maxPWM;
-	if (pwm_right > (int32_t) maxPWM)
-		pwm_right = (int32_t) maxPWM;
-	if (pwm_right < -(int32_t) maxPWM)
-		pwm_right = -(int32_t) maxPWM;
+	// Saturación final al límite de PWM
+	if (pwm_left > (int32_t) maxPWM)  pwm_left = (int32_t) maxPWM;
+	if (pwm_left < -(int32_t) maxPWM) pwm_left = -(int32_t) maxPWM;
+	if (pwm_right > (int32_t) maxPWM)  pwm_right = (int32_t) maxPWM;
+	if (pwm_right < -(int32_t) maxPWM) pwm_right = -(int32_t) maxPWM;
+
+	// Silenciado de motores si no estamos en un modo de movimiento
+	if (robotMode != STATE_SWING && robotMode != STATE_LINE_FOLLOWING && robotMode != STATE_DODGE) {
+		pwm_left = 0;
+		pwm_right = 0;
+		integral = 0;
+		speed = 0;
+	}
 
 	// =========================================================
 	// --- 7. MAPEO AL HARDWARE ---
 	// =========================================================
-	// Izquierda: CH4 (Adelante), CH3 (Atrás)
 	if (pwm_left > 0) {
 		rPulse4 = (uint16_t) pwm_left;
 		lPulse3 = 0;
@@ -2161,7 +2115,6 @@ void PID_ControlTask(void) {
 		rPulse4 = 0;
 	}
 
-	// Derecha: CH2 (Adelante), CH1 (Atrás)
 	if (pwm_right > 0) {
 		rPulse2 = (uint16_t) pwm_right;
 		lPulse1 = 0;
@@ -2323,6 +2276,7 @@ int main(void)
   	ssd1306_Attach_MemWrite(displayMemWrite);
   	ssd1306_Attach_MemWriteDMA(displayMemWriteDMA);
   	ssd1306_Init();
+	ssd1306_SetDisplayOn(0); // Apagar pantalla inicialmente (modo sigue línea activo)
 
   	//mpu6050
 
