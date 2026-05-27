@@ -47,11 +47,8 @@
 /* USER CODE BEGIN PD */
 //time
 #define	TO10MS				40
-#define SSD1306_MAXVER		64
-#define	SSD1306_MAXHOR		128
 #define	SSD1306_MAXADC		30
 #define	SSD1306_MINADC		60
-#define SSD1306_FSTCOL		0
 #define	SSD1306_SNDCOL		40
 #define	SSD1306_TRDCOL		85
 
@@ -68,16 +65,12 @@
 #define HTTP_BUF_SIZE   	128
 
 #define DEBOUNCE             4
-#define NUMBUTTONS           1
-#define LIMIT                0x0F
 
 #define PID_SCALE_FACTOR	100 //factor de escala, evitar decimales o AFP (aritmetica de punto fijo)
-#define ANG50				50*PID_SCALE_FACTOR
 #define ANG45				45*PID_SCALE_FACTOR
 #define ANG20				20*PID_SCALE_FACTOR
 #define ANG15				15*PID_SCALE_FACTOR
 #define ANG10				10*PID_SCALE_FACTOR
-#define ANG5				5*PID_SCALE_FACTOR
 #define ANG2				2*PID_SCALE_FACTOR
 
 // Umbrales de control avanzado LINE_FOLLOWING
@@ -88,45 +81,23 @@
 #define STAB_CYCLES     15  // 15 ciclos x 20ms = 300ms de estabilización
 #define LOW_ANGLE_CYCLES 25 // 25 ciclos x 20ms = 500ms con ángulo insuficiente → dispara boost
 
-#define CTRLSPEED			10
-//Acelerometro
-#define RADTOGRAD			5730
 // Giroscopio
-#define GYRO_SENSITIVITY    131 // Para configuración de +/- 250 grados/s
 #define DT_MS               20
 // Filtro Complementario
 #define ALPHA_GYRO          98     // 98% de confianza al giroscopio
 #define ALPHA_ACC           2      // 2% de confianza al acelerómetro
 
 #define AZ_MIN_VALID  		4000
-#define OUTPUT_DEADBAND 	150 // outputs menores a esto → motores apagados
 
 //#define MIN_PWM 			28  // Mínimo para que la rueda empiece a girar, valor de 6 para un TIM3CP de 9999
 //#define	MAX_PWM 			25  // Máximo permitido para correcciones
 
 ////seguidor de linea
 #define SCALE_LINE			1000
-#define LINE_THRESHOLD		1250//1800
-#define IR_WHITE			1500  // Lectura ADC base sobre superficie blanca (~1800-2000)
+#define IR_WHITE			500  // Lectura ADC base sobre superficie blanca (~1800-2000)
 
-// Calibración lineal de dos puntos para los sensores de línea
-#define IR1_WHITE_RAW       3493  // Valor raw de IR1 en blanco (Derecha)
-#define IR1_BLACK_RAW       661   // Valor raw de IR1 en negro (Derecha)
-#define IR3_WHITE_RAW       3863  // Valor raw de IR3 en blanco (Centro)
-#define IR3_BLACK_RAW       512   // Valor raw de IR3 en negro (Centro)
-#define IR5_WHITE_RAW       3882  // Valor raw de IR5 en blanco (Izquierda)
-#define IR5_BLACK_RAW       1051  // Valor raw de IR5 en negro (Izquierda)
-
-#define IR_WHITE_TARGET     600   // Valor objetivo/promedio para blanco (e.g. 600)
-#define IR_BLACK_TARGET     3600  // Valor objetivo/promedio para negro (e.g. 3600)
 #define LINE_LOST_PHASE0  	35
 #define LINE_LOST_PHASE1  	70
-#define TURNPWM_LEFT		900
-#define TURNPWM_RIGHT		830
-
-// Variables del esquivador
-#define OBS_TURNPWM_LEFT    1050   // PWM de rotación izquierda
-#define OBS_TURNPWM_RIGHT   1000   // PWM de rotación derecha
 
 
 #define T100MS				100
@@ -134,7 +105,6 @@
 
 //WIFI
 #define NUM_KNOWN_NETWORKS  (sizeof(knownNetworks) / sizeof(knownNetworks[0]))
-#define NETWORK_MAX_RETRIES 2            /* Intentos por cada red antes de saltar */
 #define SCANTIME			3000//1500
 
 //banderas
@@ -142,8 +112,6 @@
 #define IS10MS				myFlags.bits.bit0
 #define IS20MS				myFlags.bits.bit1
 #define IS100MS				myFlags.bits.bit2
-
-#define HEARTBEAT			myFlags.bits.bit3
 
 #define RUN_PID             myFlags.bits.bit4
 
@@ -222,7 +190,6 @@ volatile uint8_t buffUSBTx[RXBUFSIZE];
 volatile uint8_t buffUSBRx[TXBUFSIZE];
 volatile uint8_t buffWiFiTx[RXBUFSIZE];
 volatile uint8_t buffWiFiRx[TXBUFSIZE];
-uint8_t nBytesTx = 0;
 _uWord myWord;
 //Control
 volatile _uFlag myFlags;
@@ -241,9 +208,6 @@ uint8_t i2cIndex = 0;
 _eDMA myDMA;
 
 uint8_t tmo100 = 5;
-uint8_t IS100 = 0;
-
-uint8_t chnl_1, chnl_2, chnl_3, chnl_4; ////REVISAR CAPAZ QUE SE PUEDE USAR uint8_t
 
 // Variables crudas de 16 bits para el PWM de cada motor (0 a 9999)
 uint16_t lPulse1 = 0;
@@ -361,20 +325,7 @@ int16_t vel_limit     = 500;
 
 // Variables para compensación de rotación en velocidad
 int32_t ax_fast      = 0;   // Filtro rápido de ax para velocidad
-int16_t gy_prev      = 0;   // Valor de gy del ciclo anterior para derivada
-int16_t accel_radius = 5;   // Distancia acelerómetro-centro de rotación en cm
 int16_t ax_offset    = 0;   // Offset de calibración del acelerómetro
-int16_t contrast_threshold = LINE_THRESHOLD; // Ajustable por comando (inicializado con LINE_THRESHOLD)
-
-// Ángulos usando enteros de 8 bits (0 a 255 representa un giro completo)
-uint8_t angle_x = 0;
-uint8_t angle_y = 0;
-uint8_t angle_z = 0;
-
-// Ángulos usando enteros de 8 bits
-uint8_t angle_xz = 0; // Rotación 3D clásica
-uint8_t angle_yz = 0; // Rotación 3D clásica
-uint8_t angle_xw = 0; // Rotación 4D (La magia del hipercubo)
 
 // --- Estado del seguidor de línea ---
 typedef enum {
@@ -398,10 +349,6 @@ typedef enum {
     OBS_WALL        // Avanza siguiendo la pared con sensor lateral
 } _eObsState;
 
-_eObsState obsState    = OBS_IDLE;
-uint8_t obs_timer      = 0;
-uint8_t obs_turn_dir   = 0;    // 1 = objeto a la derecha, 0 = objeto a la izquierda
-uint8_t obs_stop_done  = 0;    // flag interno para subfase de parada en APPROACH
 
 uint16_t obs_detect_dist  = 1000;  // Distancia frontal de detección de obstáculo
 uint16_t obs_corner_dist  = 800;   // Valor que tiene que tomar el sensor 45° para confirmar esquina tomada
