@@ -80,6 +80,14 @@
 #define ANG5				5*PID_SCALE_FACTOR
 #define ANG2				2*PID_SCALE_FACTOR
 
+// Umbrales de control avanzado LINE_FOLLOWING
+#define ANG7			7*PID_SCALE_FACTOR   // Umbral: ángulo insuficiente (dispara boost)
+#define ANG14			14*PID_SCALE_FACTOR  // Impulso de arranque (boost setpoint)
+#define ANG16			165*PID_SCALE_FACTOR/10  // Umbral de salvación (freno de emergencia) = 16.5°
+#define BOOST_CYCLES    10  // 10 ciclos x 20ms = 200ms de impulso
+#define STAB_CYCLES     15  // 15 ciclos x 20ms = 300ms de estabilización
+#define LOW_ANGLE_CYCLES 25 // 25 ciclos x 20ms = 500ms con ángulo insuficiente → dispara boost
+
 #define CTRLSPEED			10
 //Acelerometro
 #define RADTOGRAD			5730
@@ -165,6 +173,36 @@ UART_HandleTypeDef huart1;
 uint32_t heartBeatMask[] = {0x55555555, 0xFFFFFFFF, 0x00000000, 0x1, 0x2010080, 0x5F, 0x5, 0x28140A00, 0x15F, 0x15, 0x2A150A08, 0x55F};
 
 const char firmware[] = "EX100923v01\n";
+
+// Tablas de calibración Look-Up Table (LUT) de 16 posiciones
+#define LUT_SIZE 16
+
+const uint16_t LUT_IR1_IZQ[LUT_SIZE] = {78, 167, 315, 384, 520, 722, 807, 903, 1055, 1327, 1492, 1629, 2213, 2442, 2919, 3682};
+const uint16_t LUT_IR3_CEN[LUT_SIZE] = {149, 298, 459, 622, 868, 1261, 1501, 1720, 2246, 2874, 3261, 3499, 3847, 3875, 3885, 3905};
+const uint16_t LUT_IR5_DER[LUT_SIZE] = {102, 237, 375, 518, 705, 1092, 1255, 1490, 1931, 2501, 2865, 3140, 3826, 3853, 3881, 3892};
+const uint16_t LUT_PROMEDIO[LUT_SIZE] = {109, 234, 383, 508, 697, 1025, 1187, 1371, 1744, 2234, 2539, 2756, 3295, 3390, 3561, 3826};
+const uint16_t LUT_Y_SCALE[16] = {0, 67, 133, 200, 267, 333, 400, 467, 533, 600, 667, 733, 800, 867, 933, 1000};
+
+// Alias de compatibilidad
+#define lut_l1 LUT_IR1_IZQ
+#define lut_l2 LUT_IR3_CEN
+#define lut_l3 LUT_IR5_DER
+#define lut_l4 LUT_PROMEDIO
+#define lut_y  LUT_Y_SCALE
+
+// Mapeos específicos solicitados por las funciones de interpolación
+#define lut_l1_x LUT_IR1_IZQ
+#define lut_l1_y LUT_Y_SCALE
+#define lut_l2_x LUT_IR3_CEN
+#define lut_l2_y LUT_Y_SCALE
+#define lut_l3_x LUT_IR5_DER
+#define lut_l3_y LUT_Y_SCALE
+#define lut_l4_x LUT_PROMEDIO
+#define lut_l4_y LUT_Y_SCALE
+
+// Prototipos de las funciones de interpolación y normalización
+static uint16_t LUT_Interpolate(const uint16_t *x, const uint16_t *lut_y, uint16_t raw);
+void NormalizeLineSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm);
 
 volatile int16_t cal_left_ir = 0;
 volatile int16_t cal_center_ir = 0;
@@ -966,6 +1004,18 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		turn_limit = myWord.i16[0];
 		break;
+	case EXPORTIRCSV: {
+		// Incrementar contador de exportación (persistente en sesión)
+		static uint16_t ir_csv_export_count = 0;
+		ir_csv_export_count++;
+		// Responder: EXPORTIRCSV + ACK + count_hi + count_lo
+		unerPrtcl_PutHeaderOnTx(dataTx, EXPORTIRCSV, 4);
+		unerPrtcl_PutByteOnTx(dataTx, ACK);
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t)((ir_csv_export_count >> 8) & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t)(ir_csv_export_count & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
+		break;
+	}
 	default:
 		unerPrtcl_PutHeaderOnTx(dataTx, (_eCmd) dataRx->buff[dataRx->indexData],
 				2);
@@ -1658,6 +1708,11 @@ void PID_ControlTask(void) {
 	static uint32_t last_cycle_time = 0;
 	static uint16_t line_lost_debounce_count = 0;
 	static int32_t last_turn_offset = 0;
+	// --- Control Avanzado LINE_FOLLOWING ---
+	static int32_t  sp_filt          = 0;    // Filtro LPF del target_setpoint para evitar falsos disparos
+	static uint16_t low_angle_count  = 0;    // Contador de ciclos con ángulo insuficiente (< ANG7)
+	static uint16_t boost_count      = 0;    // Contador de ciclos restantes de impulso a -ANG14
+	static uint16_t stab_count       = 0;    // Contador de ciclos restantes de estabilización (freno)
 	uint32_t current_cycle_time = DWT->CYCCNT;
 
 	uint32_t dt_us = 20000; // Por defecto nominal de 20ms en el primer ciclo
@@ -1675,33 +1730,31 @@ void PID_ControlTask(void) {
 	measured_dt_ms = (int32_t)(dt_us / 1000);
 
 	// =========================================================
-	// --- 1. LECTURA E INVERSIÓN DE SENSORES DE LÍNEA ---
+	// --- 1. LECTURA DIRECTA DE SENSORES DE LÍNEA ---
 	// =========================================================
-	// Sensor Izquierdo = IR1 (adcData[1]), Centro = IR3 (adcData[3]), Derecho = IR5 (adcData[5])
-	int32_t left_ir   = 4095 - adcData[1];
-	int32_t center_ir = 4095 - adcData[3];
-	int32_t right_ir  = 4095 - adcData[5];
+	// ASIGNACIÓN FÍSICA DIRECTA (IR1 = Izquierda, IR3 = Centro, IR5 = Derecha):
+	uint16_t raw_left   = adcData[1];
+	uint16_t raw_center = adcData[3];
+	uint16_t raw_right  = adcData[5];
 
-	if (left_ir   < 0) left_ir   = 0;
-	if (center_ir < 0) center_ir = 0;
-	if (right_ir  < 0) right_ir  = 0;
+	// --- NORMALIZACIÓN POR LUT (Look-Up Table) ---
+	// Empaquetamos los 3 valores crudos más su promedio en el arreglo raw_sensors[4]
+	uint16_t raw_sensors[4] = {
+		raw_left,
+		raw_center,
+		raw_right,
+		(uint16_t)((raw_left + raw_center + raw_right) / 3)
+	};
+	
+	uint16_t norm_sensors[4];
+	NormalizeLineSensors(raw_sensors, norm_sensors); // Normalización e interpolación directa
 
-	// Calibración lineal de dos puntos para el sensor IR5 (right_ir, físicamente a la derecha)
-	right_ir = IR_WHITE_TARGET + ((right_ir - IR5_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR5_BLACK_RAW - IR5_WHITE_RAW);
-	if (right_ir < 0)    right_ir = 0;
-	if (right_ir > 4095) right_ir = 4095;
+	// Extracción de los valores ya normalizados listos para el control PID (0 = Blanco, 1000 = Negro)
+	int32_t left_ir   = norm_sensors[0];
+	int32_t center_ir = norm_sensors[1];
+	int32_t right_ir  = norm_sensors[2];
 
-	// Calibración lineal de dos puntos para el sensor IR3 (center_ir, físicamente al centro)
-	center_ir = IR_WHITE_TARGET + ((center_ir - IR3_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR3_BLACK_RAW - IR3_WHITE_RAW);
-	if (center_ir < 0)    center_ir = 0;
-	if (center_ir > 4095) center_ir = 4095;
-
-	// Calibración lineal de dos puntos para el sensor IR1 (left_ir, físicamente a la izquierda)
-	left_ir = IR_WHITE_TARGET + ((left_ir - IR1_WHITE_RAW) * (IR_BLACK_TARGET - IR_WHITE_TARGET)) / (IR1_BLACK_RAW - IR1_WHITE_RAW);
-	if (left_ir < 0)    left_ir = 0;
-	if (left_ir > 4095) left_ir = 4095;
-
-	// Guardar copias globales de los valores calibrados para telemetría
+	// Guardar copias globales de los valores calibrados para telemetría (Qt)
 	cal_left_ir   = (int16_t)left_ir;
 	cal_center_ir = (int16_t)center_ir;
 	cal_right_ir  = (int16_t)right_ir;
@@ -1832,6 +1885,72 @@ void PID_ControlTask(void) {
 				target_setpoint = ANG10;
 			if (target_setpoint < -ANG10)
 				target_setpoint = -ANG10;
+
+			// =========================================================
+			// --- CONTROL AVANZADO: BOOST DE ARRANQUE Y FRENO DE SALVACIÓN ---
+			// =========================================================
+
+			// 1. Filtro de paso bajo sobre target_setpoint (evita falsos disparos por vibración)
+			//    sp_filt = 90% histórico + 10% actual
+			if (sp_filt == 0) sp_filt = target_setpoint; // Inicialización en primer uso
+			sp_filt = (sp_filt * 90 + target_setpoint * 10) / 100;
+
+			// 2. FRENO DE SALVACIÓN: Si el ángulo filtrado cae por debajo de -ANG16 (excesivo)
+			//    → frenar inmediatamente, detener seguimiento de línea por 300ms
+			if (stab_count > 0) {
+				// En modo estabilización: setpoint estático, sin giro, esperando que se calme
+				target_setpoint = setpoint;
+				turn_offset = 0;
+				stab_count--;
+				if (stab_count == 0) {
+					// Fin de la estabilización: volver al seguimiento de línea
+					// Reseteamos contadores para que el boost pueda activarse si el ángulo es insuficiente
+					low_angle_count = LOW_ANGLE_CYCLES; // Forzamos boost inmediato al retomar
+					boost_count = 0;
+				}
+				last_line_error = error_linea;
+				break;
+			}
+
+			if (sp_filt < -ANG16) {
+				// Disparar freno de salvación
+				stab_count  = STAB_CYCLES;
+				boost_count = 0;
+				low_angle_count = 0;
+				target_setpoint = setpoint;
+				turn_offset = 0;
+				last_line_error = error_linea;
+				break;
+			}
+
+			// 3. BOOST DE ARRANQUE: Si el ángulo filtrado es insuficiente (> -ANG7, i.e., -7° a 0°)
+			//    acumular contador; al llegar a 500ms → aplicar -ANG14 por 200ms
+			if (boost_count > 0) {
+				// En modo boost: setear impulso de -ANG14, sin giro durante el impulso
+				target_setpoint = -ANG14;
+				turn_offset = 0;
+				boost_count--;
+				if (boost_count == 0) {
+					// Fin del boost: volver al attack_setpoint normal
+					low_angle_count = 0;
+				}
+				last_line_error = error_linea;
+				break;
+			}
+
+			// Acumulación del contador de ángulo insuficiente
+			// sp_filt > -ANG7 significa que el ángulo es MENOS negativo que -7° (demasiado vertical)
+			if (sp_filt > -ANG7) {
+				low_angle_count++;
+				if (low_angle_count >= LOW_ANGLE_CYCLES) {
+					// 500ms con ángulo insuficiente → activar impulso
+					boost_count = BOOST_CYCLES;
+					low_angle_count = 0;
+				}
+			} else {
+				// Ángulo suficiente → reiniciar contador
+				low_angle_count = 0;
+			}
 
 			last_line_error = error_linea;
 			break;
@@ -2103,6 +2222,97 @@ void PID_ControlTask(void) {
 		lPulse1 = (uint16_t) (-pwm_right);
 		rPulse2 = 0;
 	}
+}
+
+///**
+// * @brief Normaliza e interpola linealmente por tramos una lectura analógica usando una LUT de 16 posiciones.
+// * @param x Puntero a la tabla del sensor correspondiente.
+// * @param raw Valor analógico a interpolar.
+// * @return Valor normalizado interpolado en base al promedio.
+// */
+//static uint16_t LUT_Interpolate(const uint16_t *x,
+//                                uint16_t raw)
+//{
+//    if(raw <= x[0])
+//        return lut_y[0];
+//
+//    if(raw >= x[LUT_SIZE - 1])
+//        return lut_y[LUT_SIZE - 1];
+//
+//    for(int i = 0; i < LUT_SIZE - 1; i++)
+//    {
+//        if(raw >= x[i] &&
+//           raw <= x[i + 1])
+//        {
+//            float t =
+//                (float)(raw - x[i]) /
+//                (float)(x[i + 1] - x[i]);
+//
+//            float y =
+//                (float)lut_y[i] +
+//                t * ((float)lut_y[i + 1] -
+//                     (float)lut_y[i]);
+//
+//            return (uint16_t)(y + 0.5f);
+//        }
+//    }
+//
+//    return lut_y[LUT_SIZE - 1];
+//}
+//
+///**
+// * @brief Normaliza los sensores de línea usando las Look-Up Tables.
+// * @param raw Puntero al array de valores crudos [izq, centro, der, promedio].
+// * @param norm Puntero al array de valores normalizados de salida.
+// */
+//void NormalizeLineSensors(uint16_t *raw, uint16_t *norm)
+//{
+//    norm[0] = LUT_Interpolate(lut_l1, raw[0]);
+//    norm[1] = LUT_Interpolate(lut_l2, raw[1]);
+//    norm[2] = LUT_Interpolate(lut_l3, raw[2]);
+//    norm[3] = LUT_Interpolate(lut_l4, raw[3]);
+//}
+
+static uint16_t LUT_Interpolate(const uint16_t *x, const uint16_t *lut_y, uint16_t raw)
+{
+    if(raw <= x[0])
+        return lut_y[0];
+
+    // Se asume que LUT_SIZE está definido globalmente (ej. #define LUT_SIZE 16)
+    if(raw >= x[LUT_SIZE - 1])
+        return lut_y[LUT_SIZE - 1];
+
+    for(int i = 0; i < LUT_SIZE - 1; i++)
+    {
+        if(raw >= x[i] && raw <= x[i + 1])
+        {
+            uint32_t diff_x = x[i + 1] - x[i];
+            uint32_t diff_y = lut_y[i + 1] - lut_y[i];
+            uint32_t offset_x = raw - x[i];
+
+            // Aritmética entera pura.
+            // Se suma (diff_x / 2) antes de la división para emular el redondeo (+0.5)
+            uint32_t y = lut_y[i] + (((offset_x * diff_y) + (diff_x / 2)) / diff_x);
+
+            return (uint16_t)y;
+        }
+    }
+
+    return lut_y[LUT_SIZE - 1];
+}
+
+/**
+ * @brief Normaliza los sensores de línea usando las Look-Up Tables.
+ * @param adcDataTx_ptr Puntero al buffer DMA seguro (adcDataTx).
+ * @param norm Puntero al array de valores normalizados de salida.
+ */
+void NormalizeLineSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm)
+{
+    // Se añade lut_y como parámetro para independizar la función
+    norm[0] = LUT_Interpolate(lut_l1_x, lut_l1_y, adcDataTx_ptr[0]);
+    norm[1] = LUT_Interpolate(lut_l2_x, lut_l2_y, adcDataTx_ptr[1]);
+    norm[2] = LUT_Interpolate(lut_l3_x, lut_l3_y, adcDataTx_ptr[2]);
+    norm[3] = LUT_Interpolate(lut_l4_x, lut_l4_y, adcDataTx_ptr[3]);
 }
 
 /* USER CODE END 0 */
@@ -2805,6 +3015,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
         HAL_UART_Receive_IT(&huart1, &byteUART_ESP01, 1);
     }
 }
+
 /* USER CODE END 4 */
 
 /**

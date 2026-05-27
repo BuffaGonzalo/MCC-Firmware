@@ -97,6 +97,7 @@ typedef enum {
 	SETTURNLIMIT = 0xC9,
 
 	ACK = 0x0D,
+	EXPORTIRCSV = 0xCA,  // Exportar datos IR al CSV: responde con ACK + número de exportación (2 bytes)
 	UNKNOWN = 0xFF
 } _eCmd;
 
