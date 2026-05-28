@@ -1679,34 +1679,53 @@ uint8_t updateMefTask(_sButton *button){
     return action;
 }
 
-void buttonTimeout10ms(_sButton *button) {
-	static uint16_t stable_count = 0;
-	static _eEvent last_stable_state = NOT_PRESSED;
+void buttonTimeout10ms(_sButton *button){
+    static uint8_t timeToDebounce = 0;
+    static uint8_t release_ticks = 0;
 
-	// Leer estado físico instantáneo (activo en bajo, SW0_Pin)
-	_eEvent current_physical = (HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin) == GPIO_PIN_RESET) ? PRESSED : NOT_PRESSED;
+    if(button->isPressed){
+        button->time += 10;
+    } else{
+    	button->time = 0;
+    }
 
-	if (current_physical == last_stable_state) {
-		stable_count = 0;
-	} else {
-		stable_count++;
-		if (stable_count >= 4) { // Requiere 40ms de estabilidad consecutiva (4 ticks de 10ms)
-			last_stable_state = current_physical;
-			stable_count = 0;
-			button->stateInput = current_physical;
-		}
-	}
+    // Leer el estado físico instantáneo del pin
+    _eEvent current_pin = (HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin) == GPIO_PIN_RESET) ? PRESSED : NOT_PRESSED;
 
-	if (button->isPressed) {
-		button->time += 10;
-	} else {
-		button->time = 0;
-	}
+    // Si el botón está actualmente presionado, aplicamos un filtro de liberación lento contra rebotes por vibración
+    if (button->isPressed) {
+        if (current_pin == NOT_PRESSED) {
+            release_ticks++;
+            if (release_ticks >= 8) { // Requiere 80ms estables de liberación física para confirmar soltado
+                button->stateInput = NOT_PRESSED;
+                release_ticks = 0;
+            }
+        } else {
+            button->stateInput = PRESSED;
+            release_ticks = 0;
+        }
+        timeToDebounce = 0; // Sincronizar
+    } else {
+        // Si no está presionado, se utiliza el debouncer rápido de 50ms original del proyecto
+        release_ticks = 0;
+        if(timeToDebounce > DEBOUNCE){
+            timeToDebounce = 0;
+            button->stateInput = current_pin;
+        } else {
+            timeToDebounce++;
+        }
+    }
 }
 
 void buttonTask(_sButton *button) {
 	// 1. Evaluar si la ventana de clics múltiples terminó y el botón no está presionado para despachar los modos de carrera
 	if (!button->isPressed && clickTimeout == 0 && clickCount > 0) {
+		// Esperar a que el bus I2C esté libre para evitar colisiones con lecturas MPU6050 activas
+		uint32_t i2c_wait = 0;
+		while (HAL_I2C_GetState(&hi2c2) != HAL_I2C_STATE_READY && i2c_wait < 50000) {
+			i2c_wait++;
+		}
+
 		// Limpiar pantalla a negro síncrono por hardware antes de apagar
 		ssd1306_Fill(Black);
 		ssd1306_UpdateScreen();
@@ -1742,6 +1761,13 @@ void buttonTask(_sButton *button) {
 		else if (button->time >= T2000MS && button->time < T3000MS) {
 			// Pulsación >= 2s y < 3s -> STATE_SECOND_SCREEN
 			robotMode = STATE_SECOND_SCREEN;
+
+			// Esperar a que el bus I2C esté libre para evitar colisiones con lecturas MPU6050
+			uint32_t i2c_wait = 0;
+			while (HAL_I2C_GetState(&hi2c2) != HAL_I2C_STATE_READY && i2c_wait < 50000) {
+				i2c_wait++;
+			}
+
 			ssd1306_ResetDMAState(); // SOLUCIÓN AL BUG: Reiniciar la máquina de estados DMA de la pantalla
 			ssd1306_SetDisplayOn(1); // Encender pantalla
 			hbIndex = 4;             // LED Premium (1000ms encendido)
@@ -1751,6 +1777,13 @@ void buttonTask(_sButton *button) {
 		else if (button->time >= T1000MS && button->time < T2000MS) {
 			// Pulsación >= 1s y < 2s -> STATE_FIRST_SCREEN
 			robotMode = STATE_FIRST_SCREEN;
+
+			// Esperar a que el bus I2C esté libre para evitar colisiones con lecturas MPU6050
+			uint32_t i2c_wait = 0;
+			while (HAL_I2C_GetState(&hi2c2) != HAL_I2C_STATE_READY && i2c_wait < 50000) {
+				i2c_wait++;
+			}
+
 			ssd1306_ResetDMAState(); // SOLUCIÓN AL BUG: Reiniciar la máquina de estados DMA de la pantalla
 			ssd1306_SetDisplayOn(1); // Encender pantalla
 			hbIndex = 3;             // LED RAW (500ms encendido)
