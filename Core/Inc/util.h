@@ -131,6 +131,8 @@ typedef struct
     _eEvent         stateInput;
     uint8_t        isPressed;
     uint16_t        time;
+    uint8_t         clickCount;
+    uint8_t         justReleased;
 }_sButton;
 
 #endif /* INC_UTIL_H_ */

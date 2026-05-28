@@ -62,6 +62,14 @@ typedef enum {
 	OBS_CORNER,                                       // Estado 2: Maniobrando esquinas cerradas alrededor del objeto
 	OBS_WALL                                          // Estado 3: Seguimiento paralelo a la pared del obstáculo
 } _eObsState;
+
+typedef enum {
+    STATE_SWING = 0,          // 1 clic: Solo balanceo estático en el lugar, pantalla off
+    STATE_LINE_FOLLOWING = 1, // 2 clics: Seguimiento de línea activo, pantalla off
+    STATE_DODGE = 2,          // 3 clics: Esquivado de obstáculos activo, pantalla off
+    STATE_FIRST_SCREEN = 3,   // Pulsación 1s: Pantalla RAW (ADC, ACC, GYR), motores off
+    STATE_SECOND_SCREEN = 4   // Pulsación 2s: Pantalla Premium (VEL, ACL, ANG, BAL), motores off
+} _eRobotMode;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -116,6 +124,7 @@ typedef enum {
 #define HTTP_BUF_SIZE       128      // Tamaño máximo de almacenamiento de request HTTP (Webserver)
 #define NUM_KNOWN_NETWORKS  (sizeof(knownNetworks) / sizeof(knownNetworks[0])) // Cantidad de redes registradas
 #define SCANTIME            3000     // Tiempo en ms para escaneo de redes conocidas
+#define HTTP_BUF_RESET()  do { httpBufIdx = 0; httpBuf[0] = '\0'; } while(0) /* Macro de seguridad: centraliza el reset del buffer HTTP */
 
 // =========================================================
 // //PID
@@ -130,14 +139,7 @@ typedef enum {
 #define ANG7_5              75*PID_SCALE_FACTOR/10 // Ángulo de recuperación amortiguado (7.50°)
 #define ANG2                2*PID_SCALE_FACTOR  // Ángulo de caída delantera (2.00°)
 
-// Umbrales de control avanzado LINE_FOLLOWING (Obsoletos en lazo de control simplificado)
-#define ANG7                7*PID_SCALE_FACTOR   // Ángulo insuficiente
-#define ANG14               14*PID_SCALE_FACTOR  // Boost de arranque
-#define ANG16               165*PID_SCALE_FACTOR/10  // Freno de salvación
 
-#define BOOST_CYCLES        10       // Ciclos de duración del boost de arranque
-#define STAB_CYCLES         15       // Ciclos de duración del freno de salvación
-#define LOW_ANGLE_CYCLES    25       // Ciclos necesarios con ángulo bajo para disparar boost
 
 // =========================================================
 // //SEGUIDOR
@@ -197,19 +199,9 @@ TIM_HandleTypeDef htim4;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-typedef enum {
-    STATE_SWING = 0,          // 1 clic: Solo balanceo estático en el lugar, pantalla off
-    STATE_LINE_FOLLOWING = 1, // 2 clics: Seguimiento de línea activo, pantalla off
-    STATE_DODGE = 2,          // 3 clics: Esquivado de obstáculos activo, pantalla off
-    STATE_FIRST_SCREEN = 3,   // Pulsación 1s: Pantalla RAW (ADC, ACC, GYR), motores off
-    STATE_SECOND_SCREEN = 4   // Pulsación 2s: Pantalla Premium (VEL, ACL, ANG, BAL), motores off
-} _eRobotMode;
-
 volatile _eRobotMode robotMode = STATE_SWING;
 
-// Variables globales para la detección de clics múltiples
-volatile uint16_t clickTimeout = 0;  // Temporizador para la ventana de multiclic (en ms)
-volatile uint8_t clickCount = 0;    // Contador de clics cortos acumulados
+// Variables de botones encapsuladas dentro de la estructura _sButton myButton
 
 // =========================================================
 // //GENERAL
@@ -248,6 +240,7 @@ int16_t gy = 0;                                       // Lectura cruda del giros
 int16_t gz = 0;                                       // Lectura cruda del giroscopio en el eje Z
 volatile int32_t speed = 0;                           // Estimación física de la velocidad lineal en mm/s
 volatile int32_t dynamic_accel = 0;                   // Aceleración lineal filtrada y compensada
+volatile uint16_t calib_cycle = 0;                    // Contador de ciclos de calibración inicial del MPU (para telemetría)
 
 // =========================================================
 // //I2C
@@ -278,7 +271,6 @@ _uWord myWord;                                        // Unión de propósito ge
 // //BANDERAS
 // =========================================================
 volatile _uFlag myFlags;                              // Banderas de ciclo de tareas del sistema en tiempo real
-_eDMA myDMA;                                          // Estado actual de control del bus DMA
 
 // =========================================================
 // //MOTORES
@@ -319,8 +311,7 @@ static const _sWiFiNetwork knownNetworks[] = {
 };                                                    // Base de datos local de redes Wi-Fi a las cuales autoconectarse
 
 static uint8_t currentNetworkIdx = 0;                 // Red actual en intento de conexión por el escáner
-static uint8_t networkScanActive = 0;                 // Bandera indicadora de escáner de redes activo
-static uint8_t networkRetryCount = 0;                 // Contador de intentos de conexión para la red actual
+static uint8_t networkScanActive = 0;                 // _eDMA Bandera indicadora de escáner de redes activo
 static uint16_t networkScanTimer = SCANTIME;          // Temporizador de permanencia en escaneo de red en milisegundos
 
 // =========================================================
@@ -392,11 +383,6 @@ int16_t vel_damp_div = 500;                           // Divisor del término am
 int16_t vel_damp_limit = 100;                         // Límite del amortiguador de velocidad
 int16_t turn_limit = 1000;                            // Límite superior absoluto del esfuerzo de giro motor (Yaw)
 
-int32_t vel_estimate = 0;                             // Estimación física de la velocidad inercial
-int16_t vel_decay = 98;                               // Factor de decaimiento del filtro inercial de velocidad
-int16_t vel_setpoint_gain = 10;                       // Ganancia del control del setpoint por velocidad
-int16_t vel_limit = 500;                              // Límite de velocidad permitida para las estimaciones
-int32_t ax_fast = 0;                                  // Filtro rápido de aceleración X para control inercial
 int16_t ax_offset = 0;                                // Offset calibrado de gravedad en reposo del acelerómetro X
 
 _eLineState lineState = LINE_SEARCHING;               // Estado actual de la máquina del seguidor de línea
@@ -406,7 +392,6 @@ uint8_t line_lost_phase = 0;                          // Fase de búsqueda secue
 // =========================================================
 // //OBSTACULO
 // =========================================================
-_eObsState obsState = OBS_IDLE;                       // Estado actual del esquivador de obstáculos
 uint16_t obs_detect_dist = 1000;                      // Distancia frontal de detección en mm
 uint16_t obs_corner_dist = 800;                       // Distancia lateral del sensor de 45° para validar esquina
 uint16_t obs_lost_dist = 400;                         // Distancia mínima lateral por debajo de la cual la pared terminó
@@ -434,7 +419,6 @@ void USBRxData(uint8_t *buf, uint32_t len);
 void decodeCommand(_sComm *dataRx, _sComm *dataTx);
 //Time functions
 void do10ms();
-void do100ms();
 
 //Others
 void heartBeatTask();
@@ -473,14 +457,12 @@ void sendHTTPOKPage(uint8_t connID);
 void parseHTTPGetParams(const char *httpReq, char *ssid, char *pass, char *ip, uint16_t *port);
 void httpTask(void);
 void OnESP01ChangeState(_eESP01STATUS state);
-
-
 //PID
 void PID_ControlTask(void);
-
-void ssd1306_DrawCube(void);
-
-void ssd1306_DrawTesseract(void);
+void Speed_IntegrationTask(uint32_t dt_us);
+static void WiFi_ScanTick(void);
+static void UART_EnforceReceiverActive(void);
+static void WiFi_HeartbeatTick(void);
 
 /* USER CODE END PFP */
 
@@ -1025,86 +1007,33 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 }
 
 void do10ms() {
+	if (!IS10MS) return;
+	IS10MS = FALSE;
 
-	if (IS10MS) {
-		IS10MS = FALSE;
-		tmo100ms--;
-		tmo20ms--;
-		ESP01_Timeout10ms();
-		buttonTimeout10ms(&myButton);
+	// --- 1. Tareas Periódicas de 10ms ---
+	ESP01_Timeout10ms();
+	buttonTimeout10ms(&myButton);
+	UART_EnforceReceiverActive();
+	WiFi_ScanTick();
 
-		/* Control de ventana de clics múltiples */
-		if (clickTimeout > 0) {
-			if (clickTimeout >= 10) {
-				clickTimeout -= 10;
-			} else {
-				clickTimeout = 0;
-			}
-		}
-
-		/* Lógica de escaneo autónomo y cíclico de redes */
-		if (networkScanActive) {
-			if (networkScanTimer > 0) {
-				networkScanTimer--;
-			} else {
-				/* Se acabó el tiempo (15 segs). Pasamos a la siguiente red en la lista */
-				currentNetworkIdx++;
-				if (currentNetworkIdx >= NUM_KNOWN_NETWORKS) {
-					currentNetworkIdx = 0; /* Volvemos al inicio de la lista */
-				}
-
-				networkScanTimer = SCANTIME; /* Reiniciamos la paciencia: 15 segundos */
-
-				/* Forzamos al ESP01 a probar la nueva red */
-				ESP01_SetWIFI(knownNetworks[currentNetworkIdx].ssid,
-						knownNetworks[currentNetworkIdx].password);
-			}
-		}
-
-		if (huart1.RxState != HAL_UART_STATE_BUSY_RX) {
-			uint32_t er = huart1.Instance->SR;
-			uint32_t dr = huart1.Instance->DR;
-			(void) er;
-			(void) dr;
-			huart1.RxState = HAL_UART_STATE_READY;
-			HAL_UART_Receive_IT(&huart1, &byteUART_ESP01, 1);
-		}
-
-		if (!tmo20ms) {
-			tmo20ms = 2;
-			IS20MS = TRUE;
-		}
-		if (!tmo100ms) {
-			tmo100ms = 10;
-
-			IS100MS = TRUE;
-			heartBeatTask();
-
-			timerUDP++;
-			if (timerUDP >= 10) { //Entrar cada 1000ms o 1s
-				timerUDP = 0;
-
-				// Incrementar contador de silencio WiFi (saturar en 5)
-				if (udpSilenceCounter < 5)
-					udpSilenceCounter++;
-
-				/* Enviar ALIVE solo si la PC no esta comunicandose activamente.
-				 * udpSilenceCounter se incrementa cada 1s y se resetea a 0 cuando
-				 * llega un comando WiFi. Se fuerza a 5 al conectar UDP para garantizar
-				 * el primer ALIVE. Threshold: 5s de silencio. */
-				if(!isWebserverMode && ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED
-						&& udpSilenceCounter >= 5){
-					static uint8_t bufferTx[9] = { 'U', 'N', 'E', 'R', 0x03, ':', ALIVE, ACK, 0x98 };
-					ESP01_Send(0, bufferTx, 0, 9, TXBUFSIZE);
-				}
-			}
-		}
+	// --- 2. Divisor de Tiempo: 20ms ---
+	tmo20ms--;
+	if (!tmo20ms) {
+		tmo20ms = 2;
+		IS20MS = TRUE;
 	}
-}
 
-void do100ms(){
-	if(IS100MS){
-		IS100MS=FALSE;
+	// --- 3. Divisor de Tiempo: 100ms ---
+	tmo100ms--;
+	if (!tmo100ms) {
+		tmo100ms = 10;
+		IS100MS = TRUE;
+
+		// Tarea Periódica de 100ms
+		heartBeatTask();
+
+		// Tareas Periódicas de 1s (Encapsuladas en tick de 100ms)
+		WiFi_HeartbeatTick();
 	}
 }
 
@@ -1459,7 +1388,6 @@ void WiFi_Data_Callback(uint8_t byte)
 /* ============================================================
  *  WEBSERVER - Funciones HTTP
  * ============================================================ */
-
 /**
  * @brief Envia el formulario HTML con campos SSID, PASS, IP y Puerto
  */
@@ -1576,10 +1504,6 @@ void OnESP01ChangeState(_eESP01STATUS state)
 /**
  * @brief Tarea principal del webserver: procesa la primera linea HTTP capturada
  */
-
-/* Macro de seguridad: centraliza el reset del buffer HTTP */
-#define HTTP_BUF_RESET()  do { httpBufIdx = 0; httpBuf[0] = '\0'; } while(0)
-
 void httpTask(void)
 {
     /* Iniciar UDP en cuanto el WiFi este listo (viene del callback) */
@@ -1641,6 +1565,8 @@ void initButton(_sButton *button){
     button->stateInput = NO_EVENT;
     button->isPressed = FALSE;
     button->time = 0;
+    button->clickCount = 0;
+    button->justReleased = FALSE;
 }
 
 uint8_t updateMefTask(_sButton *button){
@@ -1667,6 +1593,7 @@ uint8_t updateMefTask(_sButton *button){
             if(button->stateInput==NOT_PRESSED){
                 button->currentState=BUTTON_UP;
                 button->isPressed = FALSE;
+                button->justReleased = TRUE; // Capturar flanco de subida de liberación
                 action=TRUE;
             }else{
                 button->currentState=BUTTON_DOWN;
@@ -1682,12 +1609,7 @@ uint8_t updateMefTask(_sButton *button){
 void buttonTimeout10ms(_sButton *button){
     static uint8_t timeToDebounce = 0;
     static uint8_t release_ticks = 0;
-
-    if(button->isPressed){
-        button->time += 10;
-    } else{
-    	button->time = 0;
-    }
+    static uint8_t was_pressed = FALSE;
 
     // Leer el estado físico instantáneo del pin
     _eEvent current_pin = (HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin) == GPIO_PIN_RESET) ? PRESSED : NOT_PRESSED;
@@ -1715,15 +1637,35 @@ void buttonTimeout10ms(_sButton *button){
             timeToDebounce++;
         }
     }
+
+    // Lógica unificada para el acumulador / temporizador "time"
+    if (button->isPressed) {
+        if (!was_pressed) {
+            button->time = 0; // Reiniciar para empezar a cronometrar la pulsación actual desde cero
+            was_pressed = TRUE;
+        }
+        button->time += 10;
+    } else {
+        was_pressed = FALSE;
+        // Si no está presionado y hay clics acumulados, decrementamos la ventana de multiclic
+        if (button->clickCount > 0 && button->time > 0) {
+            if (button->time >= 10) {
+                button->time -= 10;
+            } else {
+                button->time = 0;
+            }
+        } else if (button->clickCount == 0) {
+            button->time = 0;
+        }
+    }
 }
 
 void buttonTask(_sButton *button) {
-	// 1. Evaluar si la ventana de clics múltiples terminó y el botón no está presionado para despachar los modos de carrera
-	if (!button->isPressed && clickTimeout == 0 && clickCount > 0) {
-		// Esperar a que el bus I2C esté libre para evitar colisiones con lecturas MPU6050 activas
-		uint32_t i2c_wait = 0;
-		while (HAL_I2C_GetState(&hi2c2) != HAL_I2C_STATE_READY && i2c_wait < 50000) {
-			i2c_wait++;
+	// 1. Evaluar si la ventana de clics múltiples terminó (time llegó a 0) sin eventos de liberación pendientes
+	if (!button->isPressed && button->time == 0 && button->clickCount > 0 && !button->justReleased) {
+		// Retornar y reintentar en el próximo ciclo si el bus I2C está ocupado, previniendo bloqueos y jitter
+		if (HAL_I2C_GetState(&hi2c2) != HAL_I2C_STATE_READY) {
+			return;
 		}
 
 		// Limpiar pantalla a negro síncrono por hardware antes de apagar
@@ -1731,7 +1673,7 @@ void buttonTask(_sButton *button) {
 		ssd1306_UpdateScreen();
 		ssd1306_SetDisplayOn(0); // Apagar físicamente la pantalla
 
-		switch (clickCount) {
+		switch (button->clickCount) {
 			case 1:
 				robotMode = STATE_SWING;
 				hbIndex = 0; // LED Swing (1 parpadeo de 100ms)
@@ -1750,52 +1692,51 @@ void buttonTask(_sButton *button) {
 				hbIndex = 1;
 				break;
 		}
-		clickCount = 0; // Resetear contador
+		button->clickCount = 0; // Resetear contador
 	}
 
-	// 2. Solo tomamos decisiones de temporización de pulsación al soltar el botón
-	if (!button->isPressed && button->time > 0) {
+	// 2. Solo tomamos decisiones de temporización de pulsación ante un EVENTO DE LIBERACIÓN
+	if (button->justReleased) {
 		if (button->time >= T3000MS) {
-			// Sin accion por ahora
+			button->justReleased = FALSE; // Consumir el evento
+			button->time = 0; // Sin acción por ahora, limpiar
 		}
 		else if (button->time >= T2000MS && button->time < T3000MS) {
+			// Retornar y reintentar en el próximo ciclo si el bus I2C está ocupado, previniendo bloqueos
+			if (HAL_I2C_GetState(&hi2c2) != HAL_I2C_STATE_READY) {
+				return;
+			}
+			button->justReleased = FALSE; // Consumir el evento
+
 			// Pulsación >= 2s y < 3s -> STATE_SECOND_SCREEN
 			robotMode = STATE_SECOND_SCREEN;
-
-			// Esperar a que el bus I2C esté libre para evitar colisiones con lecturas MPU6050
-			uint32_t i2c_wait = 0;
-			while (HAL_I2C_GetState(&hi2c2) != HAL_I2C_STATE_READY && i2c_wait < 50000) {
-				i2c_wait++;
-			}
-
 			ssd1306_ResetDMAState(); // SOLUCIÓN AL BUG: Reiniciar la máquina de estados DMA de la pantalla
 			ssd1306_SetDisplayOn(1); // Encender pantalla
 			hbIndex = 4;             // LED Premium (1000ms encendido)
-			clickCount = 0;          // Abortar clics cortos pendientes
-			clickTimeout = 0;
+			button->clickCount = 0;  // Abortar clics cortos pendientes
+			button->time = 0;        // Limpiar
 		}
 		else if (button->time >= T1000MS && button->time < T2000MS) {
+			// Retornar y reintentar en el próximo ciclo si el bus I2C está ocupado, previniendo bloqueos
+			if (HAL_I2C_GetState(&hi2c2) != HAL_I2C_STATE_READY) {
+				return;
+			}
+			button->justReleased = FALSE; // Consumir el evento
+
 			// Pulsación >= 1s y < 2s -> STATE_FIRST_SCREEN
 			robotMode = STATE_FIRST_SCREEN;
-
-			// Esperar a que el bus I2C esté libre para evitar colisiones con lecturas MPU6050
-			uint32_t i2c_wait = 0;
-			while (HAL_I2C_GetState(&hi2c2) != HAL_I2C_STATE_READY && i2c_wait < 50000) {
-				i2c_wait++;
-			}
-
 			ssd1306_ResetDMAState(); // SOLUCIÓN AL BUG: Reiniciar la máquina de estados DMA de la pantalla
 			ssd1306_SetDisplayOn(1); // Encender pantalla
 			hbIndex = 3;             // LED RAW (500ms encendido)
-			clickCount = 0;          // Abortar clics cortos pendientes
-			clickTimeout = 0;
+			button->clickCount = 0;  // Abortar clics cortos pendientes
+			button->time = 0;        // Limpiar
 		}
 		else if (button->time < T1000MS) {
-			// Clic corto detectado (duración < 1s) -> Sumar al contador y arrancar ventana de 400ms
-			clickCount++;
-			clickTimeout = T400MS; 
+			button->justReleased = FALSE; // Consumir el evento
+			// Clic corto detectado (duración < 1s) -> Sumar al contador y arrancar ventana de 400ms reutilizando 'time'
+			button->clickCount++;
+			button->time = T400MS; 
 		}
-		button->time = 0; // Limpiar acumulador
 	}
 }
 
@@ -2058,83 +1999,8 @@ void PID_ControlTask(void) {
 		}
 	}
 
-	// Integración de velocidad (estimación interna de telemetría)
-	static uint16_t calib_cycle = 0;
-	static int32_t ax_calib_sum = 0;
-	static int32_t last_gz_filt = 0;
-	static int32_t gx_filt = 0, gy_filt = 0, gz_filt = 0;
-	static int32_t ax_tele_filt = 0;
-
-	if (gx_filt == 0 && gy_filt == 0 && gz_filt == 0) {
-		gx_filt = gx;
-		gy_filt = gy;
-		gz_filt = gz;
-	} else {
-		gx_filt = (gx * 10 + gx_filt * 90) / 100;
-		gy_filt = (gy * 10 + gy_filt * 90) / 100;
-		gz_filt = (gz * 10 + gz_filt * 90) / 100;
-	}
-
-	if (ax_tele_filt == 0) {
-		ax_tele_filt = ax;
-	} else {
-		ax_tele_filt = (ax * 50 + ax_tele_filt * 50) / 100;
-	}
-
-	int32_t ang = current_angle;
-	int32_t linear_part = (ang * 286) / 100;
-	int64_t ang64 = ang;
-	int32_t cubic_part = (int32_t)((ang64 * ang64 * ang64) / 68880962LL);
-	int32_t gravity_comp = linear_part - cubic_part;
-
-	if (calib_cycle < 150) {
-		if (calib_cycle < 40) {
-			ax_filt = ax;
-			az_filt = az;
-			gx_filt = gx;
-			gy_filt = gy;
-			gz_filt = gz;
-			last_gz_filt = gz;
-			current_angle_hr = (int32_t)ax_filt * 35;
-			current_angle = current_angle_hr / 100;
-			ang = current_angle;
-			linear_part = (ang * 286) / 100;
-			ang64 = ang;
-			cubic_part = (int32_t)((ang64 * ang64 * ang64) / 68880962LL);
-			gravity_comp = linear_part - cubic_part;
-			ax_tele_filt = ax;
-		}
-
-		if (calib_cycle >= 50) {
-			ax_calib_sum += (ax_tele_filt - gravity_comp);
-		}
-		calib_cycle++;
-		if (calib_cycle == 150) {
-			ax_offset = ax_calib_sum / 100;
-		}
-		dynamic_accel = 0;
-		speed = 0;
-		last_gz_filt = gz_filt;
-	} else {
-		int32_t rot_Y_sq = (int32_t)gy_filt * gy_filt;
-		int32_t rot_Z_sq = (int32_t)gz_filt * gz_filt;
-		int32_t rot_XY   = (int32_t)gx_filt * gy_filt;
-		int32_t alpha_z = gz_filt - last_gz_filt;
-		last_gz_filt = gz_filt;
-
-		int32_t rx_centrifugal = (rot_Y_sq + rot_Z_sq) / 2249000;
-		int32_t ry_centrifugal = rot_XY / 2249000;
-		int32_t ry_tangential  = alpha_z / 6;
-
-		dynamic_accel = ax_tele_filt - ax_offset - gravity_comp - rx_centrifugal + ry_centrifugal + ry_tangential;
-
-		int32_t accel_for_integration = dynamic_accel;
-		if (accel_for_integration > -1300 && accel_for_integration < 1300) {
-			accel_for_integration = 0;
-		}
-
-		speed = (speed * 98) / 100 + (int32_t)(((int64_t)accel_for_integration * dt_us * 3LL) / 5000000LL);
-	}
+	// Integración de velocidad (estimación interna de telemetría extraída)
+	Speed_IntegrationTask(dt_us);
 
 	// =========================================================
 	// --- 6. PROTECCIÓN ABSOLUTA Y APAGADO POR CAÍDA (> 45°) ---
@@ -2375,7 +2241,6 @@ int main(void)
   	 * Si falla, el callback OnESP01ChangeState pasa a la siguiente.
   	 * Cuando conecta, carga la IP correspondiente automáticamente. */
   	currentNetworkIdx = 0;
-  	networkRetryCount = 0;
   	networkScanTimer = SCANTIME; /* Darle 15 segs a la primera red*/
   	networkScanActive = 1;
   	ESP01_SetWIFI(knownNetworks[currentNetworkIdx].ssid,
@@ -2978,6 +2843,148 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
         huart->RxState = HAL_UART_STATE_READY;
         HAL_UART_Receive_IT(&huart1, &byteUART_ESP01, 1);
     }
+}
+
+/**
+ * @brief Tarea de integración y estimación inercial de la velocidad y aceleración lineal (Telemetría interna).
+ * @param dt_us Delta-time medido en microsegundos de la ejecución del bucle inercial.
+ */
+void Speed_IntegrationTask(uint32_t dt_us) {
+    static int32_t ax_calib_sum = 0;
+    static int32_t last_gz_filt = 0;
+    static int32_t gx_filt = 0, gy_filt = 0, gz_filt = 0;
+    static int32_t ax_tele_filt = 0;
+
+    // Filtro pasa-bajos para las velocidades angulares (giroscopio)
+    if (gx_filt == 0 && gy_filt == 0 && gz_filt == 0) {
+        gx_filt = gx;
+        gy_filt = gy;
+        gz_filt = gz;
+    } else {
+        gx_filt = (gx * 10 + gx_filt * 90) / 100;
+        gy_filt = (gy * 10 + gy_filt * 90) / 100;
+        gz_filt = (gz * 10 + gz_filt * 90) / 100;
+    }
+
+    // Filtro pasa-bajos rápido de baja latencia para el acelerómetro (telemetría fina)
+    if (ax_tele_filt == 0) {
+        ax_tele_filt = ax;
+    } else {
+        ax_tele_filt = (ax * 50 + ax_tele_filt * 50) / 100;
+    }
+
+    // Compensación trigonométrica de la aceleración de gravedad debido al ángulo de inclinación
+    int32_t ang = current_angle;
+    int32_t linear_part = (ang * 286) / 100;
+    int64_t ang64 = ang;
+    int32_t cubic_part = (int32_t)((ang64 * ang64 * ang64) / 68880962LL);
+    int32_t gravity_comp = linear_part - cubic_part;
+
+    // FASE DE CALIBRACIÓN INICIAL E INTEGRACIÓN INERCIAL (Primeros 3 segundos)
+    if (calib_cycle < 150) {
+        if (calib_cycle < 40) {
+            // Acoplamiento rápido inicial de filtros para eliminar el retardo (lag)
+            ax_filt = ax;
+            az_filt = az;
+            gx_filt = gx;
+            gy_filt = gy;
+            gz_filt = gz;
+            last_gz_filt = gz;
+            current_angle_hr = (int32_t)ax_filt * 35;
+            current_angle = current_angle_hr / 100;
+            ang = current_angle;
+            linear_part = (ang * 286) / 100;
+            ang64 = ang;
+            cubic_part = (int32_t)((ang64 * ang64 * ang64) / 68880962LL);
+            gravity_comp = linear_part - cubic_part;
+            ax_tele_filt = ax;
+        }
+
+        if (calib_cycle >= 50) {
+            // Promedio móvil para calibración del offset en reposo
+            ax_calib_sum += (ax_tele_filt - gravity_comp);
+        }
+        calib_cycle++;
+        if (calib_cycle == 150) {
+            ax_offset = ax_calib_sum / 100; // Offset guardado
+        }
+        dynamic_accel = 0;
+        speed = 0;
+        last_gz_filt = gz_filt;
+    } else {
+        // MODO OPERACIÓN NORMAL (Cálculo tridimensional de fuerzas centrífugas y tangenciales)
+        int32_t rot_Y_sq = (int32_t)gy_filt * gy_filt;
+        int32_t rot_Z_sq = (int32_t)gz_filt * gz_filt;
+        int32_t rot_XY   = (int32_t)gx_filt * gy_filt;
+        int32_t alpha_z = gz_filt - last_gz_filt;
+        last_gz_filt = gz_filt;
+
+        // Compensación de fuerzas parásitas por desplazamiento físico del MPU
+        int32_t rx_centrifugal = (rot_Y_sq + rot_Z_sq) / 2249000;
+        int32_t ry_centrifugal = rot_XY / 2249000;
+        int32_t ry_tangential  = alpha_z / 6;
+
+        // Aceleración lineal resultante
+        dynamic_accel = ax_tele_filt - ax_offset - gravity_comp - rx_centrifugal + ry_centrifugal + ry_tangential;
+
+        // Puerta de ruido (deadband) para evitar deriva inercial remanente
+        int32_t accel_for_integration = dynamic_accel;
+        if (accel_for_integration > -1300 && accel_for_integration < 1300) {
+            accel_for_integration = 0;
+        }
+
+        // Integración física en velocidad mm/s
+        speed = (speed * 98) / 100 + (int32_t)(((int64_t)accel_for_integration * dt_us * 3LL) / 5000000LL);
+    }
+}
+
+static void WiFi_ScanTick(void) {
+	if (!networkScanActive) return;
+
+	if (networkScanTimer > 0) {
+		networkScanTimer--;
+	} else {
+		/* Se acabó el tiempo (15 segs). Pasamos a la siguiente red en la lista */
+		currentNetworkIdx++;
+		if (currentNetworkIdx >= NUM_KNOWN_NETWORKS) {
+			currentNetworkIdx = 0; /* Volvemos al inicio de la lista */
+		}
+
+		networkScanTimer = SCANTIME; /* Reiniciamos la paciencia: 15 segundos */
+
+		/* Forzamos al ESP01 a probar la nueva red */
+		ESP01_SetWIFI(knownNetworks[currentNetworkIdx].ssid,
+				knownNetworks[currentNetworkIdx].password);
+	}
+}
+
+static void UART_EnforceReceiverActive(void) {
+	if (huart1.RxState != HAL_UART_STATE_BUSY_RX) {
+		uint32_t er = huart1.Instance->SR;
+		uint32_t dr = huart1.Instance->DR;
+		(void) er;
+		(void) dr;
+		huart1.RxState = HAL_UART_STATE_READY;
+		HAL_UART_Receive_IT(&huart1, &byteUART_ESP01, 1);
+	}
+}
+
+static void WiFi_HeartbeatTick(void) {
+	timerUDP++;
+	if (timerUDP >= 10) { // Entrar cada 10 ciclos de 100ms (1000ms o 1s)
+		timerUDP = 0;
+
+		// Incrementar contador de silencio WiFi (saturar en 5)
+		if (udpSilenceCounter < 5)
+			udpSilenceCounter++;
+
+		/* Enviar ALIVE solo si la PC no esta comunicandose activamente. */
+		if (!isWebserverMode && ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED
+				&& udpSilenceCounter >= 5) {
+			static uint8_t bufferTx[9] = { 'U', 'N', 'E', 'R', 0x03, ':', ALIVE, ACK, 0x98 };
+			ESP01_Send(0, bufferTx, 0, 9, TXBUFSIZE);
+		}
+	}
 }
 
 /* USER CODE END 4 */
