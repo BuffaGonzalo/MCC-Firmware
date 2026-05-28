@@ -205,7 +205,7 @@ typedef enum {
     STATE_SECOND_SCREEN = 4   // Pulsación 2s: Pantalla Premium (VEL, ACL, ANG, BAL), motores off
 } _eRobotMode;
 
-volatile _eRobotMode robotMode = STATE_LINE_FOLLOWING;
+volatile _eRobotMode robotMode = STATE_SWING;
 
 // Variables globales para la detección de clics múltiples
 volatile uint16_t clickTimeout = 0;  // Temporizador para la ventana de multiclic (en ms)
@@ -214,9 +214,16 @@ volatile uint8_t clickCount = 0;    // Contador de clics cortos acumulados
 // =========================================================
 // //GENERAL
 // =========================================================
-uint32_t heartBeatMask[] = {0x55555555, 0xFFFFFFFF, 0x00000000, 0x1, 0x2010080, 0x5F, 0x5, 0x28140A00, 0x15F, 0x15, 0x2A150A08, 0x55F}; // Máscaras de parpadeo del LED
+// Nueva máscara ajustada a 20 ranuras de 100ms síncronas (Ciclo de 2.0 segundos)
+uint32_t heartBeatMask[] = {
+    0x00000001,  // Indice 0: STATE_SWING (1 parpadeo de 100ms)
+    0x00000005,  // Indice 1: STATE_LINE_FOLLOWING (2 parpadeos de 100ms)
+    0x00000015,  // Indice 2: STATE_DODGE (3 parpadeos de 100ms)
+    0x0000001F,  // Indice 3: STATE_FIRST_SCREEN (encendido 500ms, apagado 1.5s)
+    0x000003FF   // Indice 4: STATE_SECOND_SCREEN (encendido 1000ms, apagado 1s)
+};
 const char firmware[] = "EX100923v01\n";             // Versión actual del firmware del microcontrolador
-uint8_t hbIndex = 0;                                  // Índice para seleccionar la máscara del LED (Heartbeat)
+uint8_t hbIndex = 0;                                  // Índice para seleccionar la máscara del LED (Heartbeat) - Inicializado para STATE_SWING (1 parpadeo de 100ms)
 uint8_t time10ms;                                     // Temporizador incremental de 250us para llegar a 10ms
 uint8_t tmo100ms = 10;                                // Temporizador de paciencia para eventos de 100ms
 uint8_t tmo20ms = 2;                                  // Temporizador de paciencia para eventos de 20ms
@@ -1033,27 +1040,6 @@ void do10ms() {
 			} else {
 				clickTimeout = 0;
 			}
-
-			if (clickTimeout == 0 && clickCount > 0) {
-				// Ventana terminada: limpiar pantalla a negro síncrono por hardware antes de apagar
-				ssd1306_Fill(Black);
-				ssd1306_UpdateScreen();
-				ssd1306_SetDisplayOn(0); // Apagar físicamente la pantalla
-
-				if (clickCount == 1) {
-					robotMode = STATE_SWING;
-					hbIndex = 3; // LED rápido
-				}
-				else if (clickCount == 2) {
-					robotMode = STATE_LINE_FOLLOWING;
-					hbIndex = 2; // LED de carrera
-				}
-				else if (clickCount == 3) {
-					robotMode = STATE_DODGE;
-					hbIndex = 5; // LED alternativo
-				}
-				clickCount = 0; // Resetear contador
-			}
 		}
 
 		/* Lógica de escaneo autónomo y cíclico de redes */
@@ -1132,7 +1118,9 @@ void heartBeatTask() {
 	}
 
 	times++;
-	times &= 31;
+	if (times >= 20) {
+		times = 0; // Acotado a ciclo síncrono de exactly 2.0 segundos (20 ranuras x 100ms)
+	}
 }
 
 void displayMemWrite(uint8_t address, uint8_t *data, uint8_t size, uint8_t type){
@@ -1271,6 +1259,13 @@ void i2cTask() {
 	static uint8_t i = IDLE;
 	static uint8_t j = 0;
 	static uint32_t mpu_timeout = 0; // NUEVO: Contador de paciencia
+
+	// DESBLOQUEO DE SEGURIDAD: Forzar retorno a IDLE si estamos en modo movimiento para no colgar la lectura MPU
+	if (robotMode == STATE_SWING || robotMode == STATE_LINE_FOLLOWING || robotMode == STATE_DODGE) {
+		if (i == DATA_DISPLAY || i == UPD_DISPLAY) {
+			i = IDLE;
+		}
+	}
 
 	switch (i) {
 	case IDLE:
@@ -1684,51 +1679,86 @@ uint8_t updateMefTask(_sButton *button){
     return action;
 }
 
-void buttonTimeout10ms(_sButton *button){
-    static uint8_t timeToDebounce= 0;
+void buttonTimeout10ms(_sButton *button) {
+	static uint16_t stable_count = 0;
+	static _eEvent last_stable_state = NOT_PRESSED;
 
-    if(button->isPressed){
-        button->time += 10;
-    } else{
-    	button->time = 0;
-    }
+	// Leer estado físico instantáneo (activo en bajo, SW0_Pin)
+	_eEvent current_physical = (HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin) == GPIO_PIN_RESET) ? PRESSED : NOT_PRESSED;
 
-    // ACTUALIZAMOS EL ESTADO DE LOS PULSADORES
-    if(timeToDebounce > DEBOUNCE){
-        timeToDebounce = 0;
-
-		if(HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin) == GPIO_PIN_RESET) {
-			myButton.stateInput = PRESSED;
-		} else {
-			myButton.stateInput = NOT_PRESSED;
+	if (current_physical == last_stable_state) {
+		stable_count = 0;
+	} else {
+		stable_count++;
+		if (stable_count >= 4) { // Requiere 40ms de estabilidad consecutiva (4 ticks de 10ms)
+			last_stable_state = current_physical;
+			stable_count = 0;
+			button->stateInput = current_physical;
 		}
+	}
 
-    } else {
-        timeToDebounce++;
-    }
+	if (button->isPressed) {
+		button->time += 10;
+	} else {
+		button->time = 0;
+	}
 }
 
-void buttonTask(_sButton *button){
-	// Solo tomamos decisiones al soltar el botón
+void buttonTask(_sButton *button) {
+	// 1. Evaluar si la ventana de clics múltiples terminó y el botón no está presionado para despachar los modos de carrera
+	if (!button->isPressed && clickTimeout == 0 && clickCount > 0) {
+		// Limpiar pantalla a negro síncrono por hardware antes de apagar
+		ssd1306_Fill(Black);
+		ssd1306_UpdateScreen();
+		ssd1306_SetDisplayOn(0); // Apagar físicamente la pantalla
+
+		switch (clickCount) {
+			case 1:
+				robotMode = STATE_SWING;
+				hbIndex = 0; // LED Swing (1 parpadeo de 100ms)
+				break;
+			case 2:
+				robotMode = STATE_LINE_FOLLOWING;
+				hbIndex = 1; // LED Line Following (2 parpadeos)
+				break;
+			case 3:
+				robotMode = STATE_DODGE;
+				hbIndex = 2; // LED Dodge (3 parpadeos)
+				break;
+			default:
+				// Si por algún motivo hace más de 3 clics, vuelve a carrera por defecto
+				robotMode = STATE_LINE_FOLLOWING;
+				hbIndex = 1;
+				break;
+		}
+		clickCount = 0; // Resetear contador
+	}
+
+	// 2. Solo tomamos decisiones de temporización de pulsación al soltar el botón
 	if (!button->isPressed && button->time > 0) {
-		if (button->time >= T2000MS) {
-			// Pulsación >= 2s -> STATE_SECOND_SCREEN
+		if (button->time >= T3000MS) {
+			// Sin accion por ahora
+		}
+		else if (button->time >= T2000MS && button->time < T3000MS) {
+			// Pulsación >= 2s y < 3s -> STATE_SECOND_SCREEN
 			robotMode = STATE_SECOND_SCREEN;
+			ssd1306_ResetDMAState(); // SOLUCIÓN AL BUG: Reiniciar la máquina de estados DMA de la pantalla
 			ssd1306_SetDisplayOn(1); // Encender pantalla
-			hbIndex = 0;
+			hbIndex = 4;             // LED Premium (1000ms encendido)
 			clickCount = 0;          // Abortar clics cortos pendientes
 			clickTimeout = 0;
 		}
 		else if (button->time >= T1000MS && button->time < T2000MS) {
-			// Pulsación >= 1s -> STATE_FIRST_SCREEN
+			// Pulsación >= 1s y < 2s -> STATE_FIRST_SCREEN
 			robotMode = STATE_FIRST_SCREEN;
+			ssd1306_ResetDMAState(); // SOLUCIÓN AL BUG: Reiniciar la máquina de estados DMA de la pantalla
 			ssd1306_SetDisplayOn(1); // Encender pantalla
-			hbIndex = 1;
+			hbIndex = 3;             // LED RAW (500ms encendido)
 			clickCount = 0;          // Abortar clics cortos pendientes
 			clickTimeout = 0;
 		}
-		else if (button->time > T100MS && button->time < T1000MS) {
-			// Clic corto detectado -> Sumar al contador y arrancar ventana de 400ms
+		else if (button->time < T1000MS) {
+			// Clic corto detectado (duración < 1s) -> Sumar al contador y arrancar ventana de 400ms
 			clickCount++;
 			clickTimeout = T400MS; 
 		}
@@ -2357,8 +2387,8 @@ int main(void)
 
 	PID_ControlTask();
 
-	buttonTask(&myButton);
 	updateMefTask(&myButton);
+	buttonTask(&myButton);
 
   }
   /* USER CODE END 3 */
