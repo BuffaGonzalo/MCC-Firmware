@@ -101,8 +101,9 @@ typedef enum {
 // =========================================================
 #define MPU6050             1        // Identificador de tarea del giroscopio en la Pila I2C
 #define DT_MS               20       // Delta de tiempo nominal en ms para integración de giroscopio
-#define ALPHA_GYRO          98       // Confianza porcentual del filtro complementario en el giroscopio
-#define ALPHA_ACC           2        // Confianza porcentual del filtro complementario en el acelerómetro
+#define DT_US               20000    // Delta de tiempo nominal en us para el lazo PID
+#define ALPHA_GYRO          980      // Confianza en escala x1000 del filtro complementario en el giroscopio (98.0%)
+#define ALPHA_ACC           20       // Confianza en escala x1000 del filtro complementario en el acelerómetro (2.0%)
 #define AZ_MIN_VALID        4000     // Mínimo valor absoluto del acelerómetro Z para validar el ángulo
 #ifndef MPU6050_ADDR
 #define MPU6050_ADDR        (0x68 << 1) // Dirección I2C del giroscopio MPU6050
@@ -370,6 +371,8 @@ int16_t recovery_target_angle = -500;                 // Ángulo al que se recup
 // =========================================================
 int16_t Kp_line = 250;                                // Ganancia proporcional de guiñada para corrección rápida sobre la línea
 int16_t Kq_line = 15;                                 // Ganancia derivativa/cuadrática de guiñada para atenuar oscilaciones
+int16_t Kp_line_backup = 250;                         // Respaldo de Kp_line al entrar a Swing
+int16_t Kq_line_backup = 15;                          // Respaldo de Kq_line al entrar a Swing
 int32_t sum_sensors = 0;                              // Suma de lecturas normalizadas de los sensores de línea activos
 int32_t error_linea = 0;                              // Desviación calculada de la línea (eje horizontal de error)
 int32_t abs_error = 0;                                // Valor absoluto del error de línea
@@ -398,6 +401,21 @@ uint16_t obs_lost_dist = 400;                         // Distancia mínima later
 uint16_t obs_side_dist = 1000;                        // Distancia lateral de referencia deseada para seguir la pared
 uint16_t obs_stop_cycles = 10;                        // Ciclos de inmovilización previa antes de iniciar rotación evasiva
 uint16_t obs_align_dist = 2500;                       // Distancia objetivo del sensor lateral tras rotación de 90°
+
+// =========================================================
+// //DODGE ROTATION
+// =========================================================
+typedef enum {
+    DODGE_INIT,
+    DODGE_ROTATING,
+    DODGE_PAUSE
+} _eDodgeSubState;
+
+volatile _eDodgeSubState dodgeState = DODGE_INIT;
+volatile int32_t dodge_yaw = 0;
+volatile uint32_t dodge_timer = 0;
+volatile int16_t gz_offset = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -1677,19 +1695,43 @@ void buttonTask(_sButton *button) {
 			case 1:
 				robotMode = STATE_SWING;
 				hbIndex = 0; // LED Swing (1 parpadeo de 100ms)
+
+				// Respaldar ganancias antes de hacerlas 0
+				Kp_line_backup = Kp_line;
+				Kq_line_backup = Kq_line;
+				Kp_line = 0;
+				Kq_line = 0;
 				break;
 			case 2:
 				robotMode = STATE_LINE_FOLLOWING;
 				hbIndex = 1; // LED Line Following (2 parpadeos)
+
+				// Restaurar ganancias de seguimiento de línea si venían de estar en 0 (Swing)
+				if (Kp_line == 0 && Kq_line == 0) {
+					Kp_line = Kp_line_backup;
+					Kq_line = Kq_line_backup;
+				}
 				break;
 			case 3:
 				robotMode = STATE_DODGE;
 				hbIndex = 2; // LED Dodge (3 parpadeos)
+
+				// Restaurar ganancias de seguimiento de línea si venían de estar en 0 (Swing)
+				if (Kp_line == 0 && Kq_line == 0) {
+					Kp_line = Kp_line_backup;
+					Kq_line = Kq_line_backup;
+				}
 				break;
 			default:
 				// Si por algún motivo hace más de 3 clics, vuelve a carrera por defecto
 				robotMode = STATE_LINE_FOLLOWING;
 				hbIndex = 1;
+
+				// Restaurar ganancias de seguimiento de línea si venían de estar en 0 (Swing)
+				if (Kp_line == 0 && Kq_line == 0) {
+					Kp_line = Kp_line_backup;
+					Kq_line = Kq_line_backup;
+				}
 				break;
 		}
 		button->clickCount = 0; // Resetear contador
@@ -1745,25 +1787,11 @@ void PID_ControlTask(void) {
 		return;
 	RUN_PID = FALSE;
 
-	// Medición del delta-time real de ejecución mediante hardware de alta resolución
-	static uint32_t last_cycle_time = 0;
+	// Variables estáticas persistentes de estado
 	static uint16_t line_lost_debounce_count = 0;
 	static int32_t last_turn_offset = 0;
-	uint32_t current_cycle_time = DWT->CYCCNT;
 
-	uint32_t dt_us = 20000; // Por defecto nominal de 20ms en el primer ciclo
-
-	if (last_cycle_time != 0) {
-		dt_us = (current_cycle_time - last_cycle_time) / 72; // CPU corre a 72MHz
-	}
-	last_cycle_time = current_cycle_time;
-
-	// Filtro de seguridad por si ocurre algún reset de contador o retardo inusual en el arranque
-	if (dt_us < 1000 || dt_us > 100000) {
-		dt_us = 20000;
-	}
-
-	measured_dt_ms = (int32_t)(dt_us / 1000);
+	measured_dt_ms = DT_MS;
 
 	// =========================================================
 	// --- 1. LECTURA DIRECTA DE SENSORES DE LÍNEA ---
@@ -1812,7 +1840,7 @@ void PID_ControlTask(void) {
 
 	gyro_delta_hr = (-(int32_t) gy * 200) / 131;
 	current_angle_hr = (ALPHA_GYRO * (current_angle_hr + gyro_delta_hr)
-			+ ALPHA_ACC * acc_angle_hr) / 100;
+			+ ALPHA_ACC * acc_angle_hr) / 1000;
 
 	// Límites de seguridad extremos por software (+/- 90 grados)
 	if (current_angle_hr > 900000)  current_angle_hr = 900000;
@@ -1821,7 +1849,7 @@ void PID_ControlTask(void) {
 	current_angle = current_angle_hr / 100;
 
 	// =========================================================
-	// --- 3. MÁQUINA DE ESTADOS: DIRECCIÓN DE SEGUIDOR DE LÍNEA ---
+	// --- 3. MÁQUINA DE ESTADOS: DIRECCIÓN / DODGE ROTATION ---
 	// =========================================================
 	int32_t target_setpoint = setpoint; 
 	turn_offset = 0;
@@ -1833,123 +1861,166 @@ void PID_ControlTask(void) {
 
 	static uint16_t recovery_cycles = 0; // Contador de ciclos de recuperación de balance estático
 
-	switch (lineState) {
+	if (robotMode == STATE_DODGE) {
+		// --- MÁQUINA DE ESTADOS DE ROTACIÓN DE DODGE ---
+		target_setpoint = setpoint; // Mantener balance estático en su lugar
 
-	case LINE_SEARCHING:
-		recovery_cycles = 0; // Resetear temporizador al buscar la línea
-		if (ir3_active) {
-			lineState = LINE_FOLLOWING;
-		} else {
-			turn_offset = -custom_turn;
-		}
-		break;
+		// Integración de yaw continua usando gz calibrado
+		int32_t gz_calibrated = gz - gz_offset;
+		dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
 
-	case LINE_FOLLOWING:
-		if (active_count == 3 && ir1_active && ir3_active && ir5_active) {
-			lineState = LINE_CROSS;
-			recovery_cycles = 0;
+		switch (dodgeState) {
+		case DODGE_INIT:
+			dodge_yaw = 0;
+			dodge_timer = 0;
+			dodgeState = DODGE_ROTATING;
+			break;
+
+		case DODGE_ROTATING:
+			{
+				int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
+				if (abs_yaw >= 90000) { // 90 grados = 90,000 miligrados
+					turn_offset = 0;
+					dodge_timer = 0;
+					dodgeState = DODGE_PAUSE;
+				} else {
+					turn_offset = 350; // Esfuerzo de giro constante sobre el propio eje
+				}
+			}
+			break;
+
+		case DODGE_PAUSE:
+			turn_offset = 0;
+			dodge_timer += DT_US;
+			if (dodge_timer >= 500000) { // 500ms = 500,000us
+				dodgeState = DODGE_INIT;
+			}
+			break;
+
+		default:
+			dodgeState = DODGE_INIT;
 			break;
 		}
+	} else {
+		switch (lineState) {
 
-		if (active_count == 0) {
-			line_lost_debounce_count++;
-			if (line_lost_debounce_count >= 6) {
-				line_lost_debounce_count = 0;
-				line_lost_timer = 0;
-				line_lost_phase = 0;
-				lineState = LINE_LOST;
+		case LINE_SEARCHING:
+			recovery_cycles = 0; // Resetear temporizador al buscar la línea
+			if (ir3_active) {
+				lineState = LINE_FOLLOWING;
+			} else {
+				turn_offset = -custom_turn;
+			}
+			break;
+
+		case LINE_FOLLOWING:
+			if (active_count == 3 && ir1_active && ir3_active && ir5_active) {
+				lineState = LINE_CROSS;
 				recovery_cycles = 0;
 				break;
 			}
-			error_linea = last_line_error;
-			turn_offset = last_turn_offset;
-		} else {
-			line_lost_debounce_count = 0;
 
-			error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors) / 10;
-			abs_error = (error_linea > 0) ? error_linea : -error_linea;
-
-			linear_term = Kp_line * error_linea;
-			quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
-
-			if (turn_divisor == 0) turn_divisor = 1;
-			turn_offset = (linear_term + quad_term) / turn_divisor;
-
-			if (turn_offset > turn_limit)        turn_offset = turn_limit;
-			else if (turn_offset < -turn_limit)  turn_offset = -turn_limit;
-
-			last_turn_offset = turn_offset;
-		}
-		last_line_error = error_linea;
-
-		// Si está activo el temporizador de recuperación de 250ms
-		if (recovery_cycles > 0) {
-			recovery_cycles--;
-			target_setpoint = recovery_target_angle;  // Ángulo de recuperación dinámico de Qt
-		} else {
-			// Si la inclinación frontal supera el límite de gatillo (numéricamente menor al trigger de recuperación)
-			if (current_angle < recovery_trigger_angle) {
-				recovery_cycles = 12;       // Iniciar periodo de recuperación de ~250 ms (12 ciclos x 20ms = 240ms)
-				target_setpoint = recovery_target_angle;  // Ángulo de recuperación dinámico inmediato
+			if (active_count == 0) {
+				line_lost_debounce_count++;
+				if (line_lost_debounce_count >= 6) {
+					line_lost_debounce_count = 0;
+					line_lost_timer = 0;
+					line_lost_phase = 0;
+					lineState = LINE_LOST;
+					recovery_cycles = 0;
+					break;
+				}
+				error_linea = last_line_error;
+				turn_offset = last_turn_offset;
 			} else {
-				target_setpoint = attack_setpoint;  // En condiciones normales, setear el ángulo de ataque dinámico de Qt
-			}
-		}
-		break;
+				line_lost_debounce_count = 0;
 
-	case LINE_LOST:
-		recovery_cycles = 0; // Resetear temporizador al perder la línea
-		if (ir3_active) {
-			lineState = LINE_FOLLOWING;
+				error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors) / 10;
+				abs_error = (error_linea > 0) ? error_linea : -error_linea;
+
+				linear_term = Kp_line * error_linea;
+				quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
+
+				if (turn_divisor == 0) turn_divisor = 1;
+				turn_offset = (linear_term + quad_term) / turn_divisor;
+
+				if (turn_offset > turn_limit)        turn_offset = turn_limit;
+				else if (turn_offset < -turn_limit)  turn_offset = -turn_limit;
+
+				last_turn_offset = turn_offset;
+			}
+			last_line_error = error_linea;
+
+			// Si está activo el temporizador de recuperación de 250ms
+			if (recovery_cycles > 0) {
+				recovery_cycles--;
+				target_setpoint = recovery_target_angle;  // Ángulo de recuperación dinámico de Qt
+			} else {
+				// Si la inclinación frontal supera el límite de gatillo (numéricamente menor al trigger de recuperación)
+				if (current_angle < recovery_trigger_angle) {
+					recovery_cycles = 12;       // Iniciar periodo de recuperación de ~250 ms (12 ciclos x 20ms = 240ms)
+					target_setpoint = recovery_target_angle;  // Ángulo de recuperación dinámico inmediato
+				} else {
+					target_setpoint = attack_setpoint;  // En condiciones normales, setear el ángulo de ataque dinámico de Qt
+				}
+			}
+			break;
+
+		case LINE_LOST:
+			recovery_cycles = 0; // Resetear temporizador al perder la línea
+			if (ir3_active) {
+				lineState = LINE_FOLLOWING;
+				break;
+			}
+
+			if (line_lost_phase == 0) {
+				turn_offset = (last_line_error > 0) ? custom_turn : -custom_turn;
+				line_lost_timer++;
+				if (line_lost_timer >= LINE_LOST_PHASE0) {
+					line_lost_timer = 0;
+					line_lost_phase = 1;
+				}
+			} else if (line_lost_phase == 1) {
+				turn_offset = (last_line_error > 0) ? -custom_turn : custom_turn;
+				line_lost_timer++;
+				if (line_lost_timer >= LINE_LOST_PHASE1) {
+					line_lost_timer = 0;
+					line_lost_phase = 2;
+				}
+			} else {
+				turn_offset = (last_line_error > 0) ? -custom_turn : custom_turn;
+			}
+			break;
+
+		case LINE_CROSS:
+			recovery_cycles = 0; // Resetear temporizador al cruzar
+			if (active_count < 3) {
+				lineState = LINE_FOLLOWING;
+				break;
+			}
+			break;
+
+		default:
+			recovery_cycles = 0;
+			lineState = LINE_SEARCHING;
 			break;
 		}
-
-		if (line_lost_phase == 0) {
-			turn_offset = (last_line_error > 0) ? custom_turn : -custom_turn;
-			line_lost_timer++;
-			if (line_lost_timer >= LINE_LOST_PHASE0) {
-				line_lost_timer = 0;
-				line_lost_phase = 1;
-			}
-		} else if (line_lost_phase == 1) {
-			turn_offset = (last_line_error > 0) ? -custom_turn : custom_turn;
-			line_lost_timer++;
-			if (line_lost_timer >= LINE_LOST_PHASE1) {
-				line_lost_timer = 0;
-				line_lost_phase = 2;
-			}
-		} else {
-			turn_offset = (last_line_error > 0) ? -custom_turn : custom_turn;
-		}
-		break;
-
-	case LINE_CROSS:
-		recovery_cycles = 0; // Resetear temporizador al cruzar
-		if (active_count < 3) {
-			lineState = LINE_FOLLOWING;
-			break;
-		}
-		break;
-
-	default:
-		recovery_cycles = 0;
-		lineState = LINE_SEARCHING;
-		break;
 	}
 
-	// Forzar balanceo estático en el lugar en modo STATE_SWING (evitar giros)
+	// Forzar balanceo estático en el lugar en modo STATE_SWING (evitar giros y avances de ataque)
 	if (robotMode == STATE_SWING) {
 		turn_offset = 0;
+		target_setpoint = setpoint; // Forzar setpoint de equilibrio estático puro de Qt (0.5°)
 	}
 
 	// =========================================================
 	// --- 4. LAZO PID CENTRAL (Equilibrio Balancín Puro) ---
 	// =========================================================
 	error = target_setpoint - current_angle;
-	derivative = (int32_t)(((int64_t)(error - last_error) * 1000000LL) / dt_us);
+	derivative = (int32_t)(((int64_t)(error - last_error) * 1000000LL) / DT_US);
 
 	if (error > -150 && error < 150) {
-		integral += (error * (int32_t)dt_us) / 1000;
+		integral += (error * (int32_t)DT_US) / 1000;
 		if (integral > (ANG20 * 20))  integral = (ANG20 * 20);
 		if (integral < -(ANG20 * 20)) integral = -(ANG20 * 20);
 	} else {
@@ -1966,41 +2037,55 @@ void PID_ControlTask(void) {
 	int32_t pwm_left = 0;
 	int32_t pwm_right = 0;
 
-	uint8_t is_rotating = (lineState == LINE_LOST || lineState == LINE_SEARCHING);
-
-	if (is_rotating) {
-		// Modo pivote seguro
-		int32_t raw_L = output + turn_offset;
-		int32_t raw_R = output - turn_offset;
-
-		if (raw_L > 0)       pwm_left = raw_L + PWM_LRot + offset_left;
-		else if (raw_L < 0)  pwm_left = raw_L - PWM_LRot - offset_left;
-
-		if (raw_R > 0)       pwm_right = raw_R + PWM_RRot + offset_right;
-		else if (raw_R < 0)  pwm_right = raw_R - PWM_RRot - offset_right;
-	} else {
-		// Modo avance normal
+	if (robotMode == STATE_DODGE && dodgeState == DODGE_ROTATING) {
+		// Modo rotación de DODGE con balanceo prioritario y compensación de fricción
 		if (output > 0) {
-			pwm_left = output + minPWM_Left + offset_left;
-			pwm_right = output + minPWM_Right + offset_right;
+			pwm_left = output + minPWM_Left + offset_left + turn_offset;
+			pwm_right = output + minPWM_Right + offset_right - turn_offset;
 		} else if (output < 0) {
-			pwm_left = output - minPWM_Left - offset_left;
-			pwm_right = output - minPWM_Right - offset_right;
+			pwm_left = output - minPWM_Left - offset_left + turn_offset;
+			pwm_right = output - minPWM_Right - offset_right - turn_offset;
+		} else {
+			pwm_left = minPWM_Left + offset_left + turn_offset;
+			pwm_right = -minPWM_Right - offset_right - turn_offset;
 		}
+	} else {
+		uint8_t is_rotating = (lineState == LINE_LOST || lineState == LINE_SEARCHING);
 
-		if (output != 0) {
+		if (is_rotating) {
+			// Modo pivote seguro
+			int32_t raw_L = output + turn_offset;
+			int32_t raw_R = output - turn_offset;
+
+			if (raw_L > 0)       pwm_left = raw_L + PWM_LRot + offset_left;
+			else if (raw_L < 0)  pwm_left = raw_L - PWM_LRot - offset_left;
+
+			if (raw_R > 0)       pwm_right = raw_R + PWM_RRot + offset_right;
+			else if (raw_R < 0)  pwm_right = raw_R - PWM_RRot - offset_right;
+		} else {
+			// Modo avance normal
 			if (output > 0) {
-				pwm_left -= turn_offset;
-				pwm_right += turn_offset;
-			} else {
-				pwm_left += turn_offset;
-				pwm_right -= turn_offset;
+				pwm_left = output + minPWM_Left + offset_left;
+				pwm_right = output + minPWM_Right + offset_right;
+			} else if (output < 0) {
+				pwm_left = output - minPWM_Left - offset_left;
+				pwm_right = output - minPWM_Right - offset_right;
+			}
+
+			if (output != 0) {
+				if (output > 0) {
+					pwm_left -= turn_offset;
+					pwm_right += turn_offset;
+				} else {
+					pwm_left += turn_offset;
+					pwm_right -= turn_offset;
+				}
 			}
 		}
 	}
 
 	// Integración de velocidad (estimación interna de telemetría extraída)
-	Speed_IntegrationTask(dt_us);
+	Speed_IntegrationTask(DT_US);
 
 	// =========================================================
 	// --- 6. PROTECCIÓN ABSOLUTA Y APAGADO POR CAÍDA (> 45°) ---
@@ -2052,55 +2137,6 @@ void PID_ControlTask(void) {
 		rPulse2 = 0;
 	}
 }
-
-///**
-// * @brief Normaliza e interpola linealmente por tramos una lectura analógica usando una LUT de 16 posiciones.
-// * @param x Puntero a la tabla del sensor correspondiente.
-// * @param raw Valor analógico a interpolar.
-// * @return Valor normalizado interpolado en base al promedio.
-// */
-//static uint16_t LUT_Interpolate(const uint16_t *x,
-//                                uint16_t raw)
-//{
-//    if(raw <= x[0])
-//        return lut_y[0];
-//
-//    if(raw >= x[LUT_SIZE - 1])
-//        return lut_y[LUT_SIZE - 1];
-//
-//    for(int i = 0; i < LUT_SIZE - 1; i++)
-//    {
-//        if(raw >= x[i] &&
-//           raw <= x[i + 1])
-//        {
-//            float t =
-//                (float)(raw - x[i]) /
-//                (float)(x[i + 1] - x[i]);
-//
-//            float y =
-//                (float)lut_y[i] +
-//                t * ((float)lut_y[i + 1] -
-//                     (float)lut_y[i]);
-//
-//            return (uint16_t)(y + 0.5f);
-//        }
-//    }
-//
-//    return lut_y[LUT_SIZE - 1];
-//}
-//
-///**
-// * @brief Normaliza los sensores de línea usando las Look-Up Tables.
-// * @param raw Puntero al array de valores crudos [izq, centro, der, promedio].
-// * @param norm Puntero al array de valores normalizados de salida.
-// */
-//void NormalizeLineSensors(uint16_t *raw, uint16_t *norm)
-//{
-//    norm[0] = LUT_Interpolate(lut_l1, raw[0]);
-//    norm[1] = LUT_Interpolate(lut_l2, raw[1]);
-//    norm[2] = LUT_Interpolate(lut_l3, raw[2]);
-//    norm[3] = LUT_Interpolate(lut_l4, raw[3]);
-//}
 
 static uint16_t LUT_Interpolate(const uint16_t *x, const uint16_t *lut_y, uint16_t raw)
 {
@@ -2851,6 +2887,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
  */
 void Speed_IntegrationTask(uint32_t dt_us) {
     static int32_t ax_calib_sum = 0;
+    static int32_t gz_calib_sum = 0;
     static int32_t last_gz_filt = 0;
     static int32_t gx_filt = 0, gy_filt = 0, gz_filt = 0;
     static int32_t ax_tele_filt = 0;
@@ -2903,10 +2940,12 @@ void Speed_IntegrationTask(uint32_t dt_us) {
         if (calib_cycle >= 50) {
             // Promedio móvil para calibración del offset en reposo
             ax_calib_sum += (ax_tele_filt - gravity_comp);
+            gz_calib_sum += gz;
         }
         calib_cycle++;
         if (calib_cycle == 150) {
             ax_offset = ax_calib_sum / 100; // Offset guardado
+            gz_offset = gz_calib_sum / 100; // Offset de giroscopio Z guardado
         }
         dynamic_accel = 0;
         speed = 0;
