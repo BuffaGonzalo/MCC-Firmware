@@ -52,8 +52,8 @@ void mpu6050_Init(void)
     //HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, PWR_MGMT_1_REG, 1, &data, 1, HAL_MAX_DELAY);
     mpu6050_WriteData(&data, PWR_MGMT_1_REG);
 
-    // Habilitar el Digital Low Pass Filter (DLPF) a ~10Hz para eliminar vibración de motores
-	data = 0x04;
+    // Habilitar el Digital Low Pass Filter (DLPF) a ~98Hz (modo 0x02) para cumplir el teorema de muestreo a 10ms (100Hz) con mínima latencia (2.8ms)
+	data = 0x03;
 	mpu6050_WriteData(&data, CONFIG_REG);
 
     // Configurar acelerómetro con rango ±2g (registro ACCEL_CONFIG = 0x1C, valor 0x00)

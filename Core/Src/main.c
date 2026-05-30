@@ -220,7 +220,7 @@ uint8_t hbIndex = 0;                                  // Índice para selecciona
 uint8_t time10ms;                                     // Temporizador incremental de 250us para llegar a 10ms
 uint8_t tmo100ms = 10;                                // Temporizador de paciencia para eventos de 100ms
 uint8_t tmo20ms = 2;                                  // Temporizador de paciencia para eventos de 20ms
-uint8_t tmo100 = 5;                                   // Divisor de ciclo para intercalar tareas en I2C
+uint8_t tmo100 = 10;                                  // Divisor de ciclo para intercalar tareas en I2C (ajustado para TIM2 a 10ms para mantener refresco a 100ms)
 
 // =========================================================
 // //DISPLAY
@@ -361,7 +361,7 @@ uint16_t PWM_RRot = 800;                              // PWM estático de pivote
 int16_t offset_left = 0;                              // Offset para compensación de deriva de tracción del motor izquierdo
 int16_t offset_right = 0;                             // Offset para compensación de deriva de tracción del motor derecho
 
-int32_t setpoint = 50;                                // Setpoint de equilibrio estático base (x100 = 0.5°) ajustable por Qt
+int32_t setpoint = -1000;                                // Setpoint de equilibrio estático base (x100 = 0.5°) ajustable por Qt
 int16_t attack_setpoint = -1200;                      // Setpoint de inclinación frontal para ataque (configurable por Qt)
 int16_t recovery_trigger_angle = -1500;               // Ángulo de inclinación que dispara la recuperación (configurable por Qt, x100 = -15.00°)
 int16_t recovery_target_angle = -500;                 // Ángulo al que se recupera durante la ventana de 250ms (configurable por Qt, x100 = -5.00°)
@@ -511,13 +511,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 		HAL_ADC_Start_DMA(&hadc1, (uint32_t*) adcData, 8);
 	}
 
-	if (htim->Instance == TIM2) { //20ms
+	if (htim->Instance == TIM2) { // 10ms (ajustado para muestreo más rápido)
 		Pila[i2cIndex] = MPU6050;
 		i2cIndex++;
 		i2cIndex&=(I2CSIZE-1);
 		tmo100--;
 		if(!tmo100){
-			tmo100=5;
+			tmo100=10; // 10 * 10ms = 100ms para mantener el intervalo de actualización de la pantalla
 			if (robotMode == STATE_FIRST_SCREEN || robotMode == STATE_SECOND_SCREEN) {
 				Pila[i2cIndex] = SSD1306;
 				i2cIndex++;
@@ -2013,6 +2013,18 @@ void PID_ControlTask(void) {
 		target_setpoint = setpoint; // Forzar setpoint de equilibrio estático puro de Qt (0.5°)
 	}
 
+	// --- CONTROL DE PREVENCIÓN DE CAÍDA TRASERA (Lógica del Gatillo) ---
+	static uint8_t backwards_recovery_active = 0;
+	if (robotMode == STATE_SWING || robotMode == STATE_LINE_FOLLOWING || robotMode == STATE_DODGE) {
+		if (current_angle > 500) { // Si la inclinación trasera supera 5.00° (500)
+			backwards_recovery_active = 1;
+		} else if (current_angle <= 500) {
+			backwards_recovery_active = 0;
+		}
+	} else {
+		backwards_recovery_active = 0;
+	}
+
 	// =========================================================
 	// --- 4. LAZO PID CENTRAL (Equilibrio Balancín Puro) ---
 	// =========================================================
@@ -2082,6 +2094,14 @@ void PID_ControlTask(void) {
 				}
 			}
 		}
+	}
+
+	// --- IMPULSO DIRECTO DE RECUPERACIÓN TRASERA (Bypass del Balanceo) ---
+	if (backwards_recovery_active) {
+		pwm_left = -3000;  // Impulso directo marcha atrás controlado (20% duty cycle)
+		pwm_right = -3000;
+		integral = 0;      // Resetear integrador para evitar descontrol al volver a balancear
+		last_error = 0;
 	}
 
 	// Integración de velocidad (estimación interna de telemetría extraída)
@@ -2181,7 +2201,6 @@ void NormalizeLineSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm)
 }
 
 /* USER CODE END 0 */
-
 
 /**
   * @brief  The application entry point.
@@ -2411,7 +2430,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -2594,7 +2613,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 71;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 19999;
+  htim2.Init.Period = 9999;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
