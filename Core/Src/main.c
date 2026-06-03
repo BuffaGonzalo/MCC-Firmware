@@ -482,6 +482,8 @@ static void WiFi_ScanTick(void);
 static void UART_EnforceReceiverActive(void);
 static void WiFi_HeartbeatTick(void);
 
+void HandleModeScreenTransition(void);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -1699,7 +1701,6 @@ void buttonTask(_sButton *button) {
 		// Limpiar pantalla a negro síncrono por hardware antes de apagar
 		ssd1306_Fill(Black);
 		ssd1306_UpdateScreen();
-		ssd1306_SetDisplayOn(0); // Apagar físicamente la pantalla
 
 		switch (button->clickCount) {
 			case 1:
@@ -2246,6 +2247,51 @@ void NormalizeLineSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm)
     norm[3] = LUT_Interpolate(lut_l4_x, lut_l4_y, adcDataTx_ptr[3]);
 }
 
+void HandleModeScreenTransition(void) {
+	static _eRobotMode lastMode = (_eRobotMode)-1;
+	if (robotMode != lastMode) {
+		lastMode = robotMode;
+
+		if (robotMode == STATE_SWING || robotMode == STATE_LINE_FOLLOWING || robotMode == STATE_DODGE) {
+			// Esperar a que el bus I2C esté listo
+			while (HAL_I2C_GetState(&hi2c2) != HAL_I2C_STATE_READY) {
+				// Espera activa segura
+			}
+
+			ssd1306_SetDisplayOn(1);
+			ssd1306_Fill(Black);
+
+			if (robotMode == STATE_SWING) {
+				// Centrar ">>>MODO 1 -  BALANCEO<<<"
+				// Primera línea: ">>>MODO 1<<<" (12 caracteres)
+				ssd1306_SetCursor((128 - 12 * 7) / 2, 20);
+				ssd1306_WriteString(">>>MODO 1<<<", Font_7x10, White);
+				// Segunda línea: "BALANCEO" (8 caracteres)
+				ssd1306_SetCursor((128 - 8 * 7) / 2, 34);
+				ssd1306_WriteString("BALANCEO", Font_7x10, White);
+			} else if (robotMode == STATE_LINE_FOLLOWING) {
+				// Centrar ">>>MODO 2 - SEGUIMIENTO LINEA<<<"
+				// Primera línea: ">>>MODO 2<<<" (12 caracteres)
+				ssd1306_SetCursor((128 - 12 * 7) / 2, 20);
+				ssd1306_WriteString(">>>MODO 2<<<", Font_7x10, White);
+				// Segunda línea: "SEGUIMIENTO LINEA" (17 caracteres)
+				ssd1306_SetCursor((128 - 17 * 7) / 2, 34);
+				ssd1306_WriteString("SEGUIMIENTO LINEA", Font_7x10, White);
+			} else if (robotMode == STATE_DODGE) {
+				// Centrar ">>>MODO 3 - ESQUIVAR<<<"
+				// Primera línea: ">>>MODO 3<<<" (12 caracteres)
+				ssd1306_SetCursor((128 - 12 * 7) / 2, 20);
+				ssd1306_WriteString(">>>MODO 3<<<", Font_7x10, White);
+				// Segunda línea: "ESQUIVAR" (8 caracteres)
+				ssd1306_SetCursor((128 - 8 * 7) / 2, 34);
+				ssd1306_WriteString("ESQUIVAR", Font_7x10, White);
+			}
+
+			ssd1306_UpdateScreen();
+		}
+	}
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -2388,6 +2434,7 @@ int main(void)
 
 	updateMefTask(&myButton);
 	buttonTask(&myButton);
+	HandleModeScreenTransition();
 
   }
   /* USER CODE END 3 */
