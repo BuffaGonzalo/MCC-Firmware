@@ -52,8 +52,13 @@ void mpu6050_Init(void)
     //HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, PWR_MGMT_1_REG, 1, &data, 1, HAL_MAX_DELAY);
     mpu6050_WriteData(&data, PWR_MGMT_1_REG);
 
-    // Habilitar el Digital Low Pass Filter (DLPF) a ~98Hz (modo 0x02) para cumplir el teorema de muestreo a 10ms (100Hz) con mínima latencia (2.8ms)
-	data = 0x03;
+    // Configurar el Sample Rate Divider a 4 para obtener una tasa de muestreo interna del hardware de 200Hz (1000Hz / (1 + 4) = 200Hz)
+    // Sincroniza la conversión interna del sensor con la lectura de 5ms del STM32
+    data = 0x04;
+    mpu6050_WriteData(&data, SMPLRT_DIV_REG);
+
+    // Habilitar el Digital Low Pass Filter (DLPF) a ~98Hz (modo 0x02) para cumplir estrictamente el teorema de muestreo a 5ms (200Hz) con mínima latencia (2.8ms)
+	data = 0x02;
 	mpu6050_WriteData(&data, CONFIG_REG);
 
     // Configurar acelerómetro con rango ±2g (registro ACCEL_CONFIG = 0x1C, valor 0x00)

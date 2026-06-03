@@ -100,8 +100,8 @@ typedef enum {
 // //MPU
 // =========================================================
 #define MPU6050             1        // Identificador de tarea del giroscopio en la Pila I2C
-#define DT_MS               20       // Delta de tiempo nominal en ms para integración de giroscopio
-#define DT_US               20000    // Delta de tiempo nominal en us para el lazo PID
+#define DT_MS               5        // Delta de tiempo nominal en ms para integración de giroscopio (ajustado a 5ms)
+#define DT_US               5000     // Delta de tiempo nominal en us para el lazo PID (ajustado a 5ms)
 #define ALPHA_GYRO          980      // Confianza en escala x1000 del filtro complementario en el giroscopio (98.0%)
 #define ALPHA_ACC           20       // Confianza en escala x1000 del filtro complementario en el acelerómetro (2.0%)
 #define AZ_MIN_VALID        4000     // Mínimo valor absoluto del acelerómetro Z para validar el ángulo
@@ -220,7 +220,7 @@ uint8_t hbIndex = 0;                                  // Índice para selecciona
 uint8_t time10ms;                                     // Temporizador incremental de 250us para llegar a 10ms
 uint8_t tmo100ms = 10;                                // Temporizador de paciencia para eventos de 100ms
 uint8_t tmo20ms = 2;                                  // Temporizador de paciencia para eventos de 20ms
-uint8_t tmo100 = 10;                                  // Divisor de ciclo para intercalar tareas en I2C (ajustado para TIM2 a 10ms para mantener refresco a 100ms)
+uint8_t tmo100 = 20;                                  // Divisor de ciclo para intercalar tareas en I2C (ajustado para TIM2 a 5ms para mantener refresco a 100ms)
 
 // =========================================================
 // //DISPLAY
@@ -349,9 +349,9 @@ int32_t derivative = 0;                               // Componente derivativo d
 int32_t integral = 0;                                 // Componente acumulativo integral del lazo PID
 int32_t output = 0;                                   // Acción de control total del lazo de equilibrio inyectada a los motores
 
-int16_t Kp_stable = 175;                              // Ganancia proporcional de equilibrio estático
-int16_t Kd_stable = 50;                               // Ganancia derivativa de equilibrio estático
-int16_t Ki_stable = 0;                                // Ganancia integral de equilibrio estático
+int16_t Kp_stable = 85;                               // Ganancia proporcional de equilibrio estático (ajustado por el usuario)
+int16_t Kd_stable = 2;                                // Ganancia derivativa de equilibrio estático (ajustado por el usuario)
+int16_t Ki_stable = 0;                                // Ganancia integral de equilibrio estático (revertido al valor original)
 
 uint16_t maxPWM = 9999;                               // Ciclo de trabajo máximo permitido (100%)
 uint16_t minPWM_Left = 870;                           // PWM mínimo que vence la fricción estática de la rueda izquierda
@@ -362,16 +362,16 @@ int16_t offset_left = 0;                              // Offset para compensaci�
 int16_t offset_right = 0;                             // Offset para compensación de deriva de tracción del motor derecho
 
 int32_t setpoint = -1000;                                // Setpoint de equilibrio estático base (x100 = 0.5°) ajustable por Qt
-int16_t attack_setpoint = -1200;                      // Setpoint de inclinación frontal para ataque (configurable por Qt)
-int16_t recovery_trigger_angle = -1500;               // Ángulo de inclinación que dispara la recuperación (configurable por Qt, x100 = -15.00°)
-int16_t recovery_target_angle = -500;                 // Ángulo al que se recupera durante la ventana de 250ms (configurable por Qt, x100 = -5.00°)
+int16_t attack_setpoint = -1600;                      // Setpoint de inclinación frontal para ataque (configurable por Qt)
+int16_t recovery_trigger_angle = -1400;               // Ángulo de inclinación que dispara la recuperación (configurable por Qt, x100 = -15.00°)
+int16_t recovery_target_angle = -600;                 // Ángulo al que se recupera durante la ventana de 250ms (configurable por Qt, x100 = -5.00°)
 
 // =========================================================
 // //SEGUIDOR
 // =========================================================
-int16_t Kp_line = 250;                                // Ganancia proporcional de guiñada para corrección rápida sobre la línea
+int16_t Kp_line = 300;                                // Ganancia proporcional de guiñada para corrección rápida sobre la línea
 int16_t Kq_line = 15;                                 // Ganancia derivativa/cuadrática de guiñada para atenuar oscilaciones
-int16_t Kp_line_backup = 250;                         // Respaldo de Kp_line al entrar a Swing
+int16_t Kp_line_backup = 300;                         // Respaldo de Kp_line al entrar a Swing
 int16_t Kq_line_backup = 15;                          // Respaldo de Kq_line al entrar a Swing
 int32_t sum_sensors = 0;                              // Suma de lecturas normalizadas de los sensores de línea activos
 int32_t error_linea = 0;                              // Desviación calculada de la línea (eje horizontal de error)
@@ -389,7 +389,7 @@ int16_t turn_limit = 1000;                            // Límite superior absolu
 int16_t ax_offset = 0;                                // Offset calibrado de gravedad en reposo del acelerómetro X
 
 _eLineState lineState = LINE_SEARCHING;               // Estado actual de la máquina del seguidor de línea
-uint8_t line_lost_timer = 0;                          // Temporizador en ciclos transcurridos desde que se perdió la pista
+uint16_t line_lost_timer = 0;                         // Temporizador en ciclos transcurridos desde que se perdió la pista
 uint8_t line_lost_phase = 0;                          // Fase de búsqueda secuencial actual (fase 0, 1 o 2)
 
 // =========================================================
@@ -511,14 +511,24 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 		HAL_ADC_Start_DMA(&hadc1, (uint32_t*) adcData, 8);
 	}
 
-	if (htim->Instance == TIM2) { // 10ms (ajustado para muestreo más rápido)
-		Pila[i2cIndex] = MPU6050;
-		i2cIndex++;
-		i2cIndex&=(I2CSIZE-1);
+	if (htim->Instance == TIM2) { // 5ms (ajustado para muestreo rápido)
+		// En modos de movimiento, encolamos el MPU6050 en cada ciclo de 5ms
+		if (robotMode == STATE_SWING || robotMode == STATE_LINE_FOLLOWING || robotMode == STATE_DODGE) {
+			Pila[i2cIndex] = MPU6050;
+			i2cIndex++;
+			i2cIndex&=(I2CSIZE-1);
+		}
+
 		tmo100--;
 		if(!tmo100){
-			tmo100=10; // 10 * 10ms = 100ms para mantener el intervalo de actualización de la pantalla
+			tmo100=20; // 20 * 5ms = 100ms para mantener el intervalo de actualización de la pantalla
+			// En modos de pantalla, leemos el MPU y luego actualizamos la pantalla secuencialmente una vez cada 100ms
+			// Evita por completo la superposición y colisión de tareas I2C durante la visualización activa
 			if (robotMode == STATE_FIRST_SCREEN || robotMode == STATE_SECOND_SCREEN) {
+				Pila[i2cIndex] = MPU6050;
+				i2cIndex++;
+				i2cIndex&=(I2CSIZE-1);
+
 				Pila[i2cIndex] = SSD1306;
 				i2cIndex++;
 				i2cIndex&=(I2CSIZE-1);
@@ -1790,6 +1800,8 @@ void PID_ControlTask(void) {
 	// Variables estáticas persistentes de estado
 	static uint16_t line_lost_debounce_count = 0;
 	static int32_t last_turn_offset = 0;
+	static int32_t line_lost_yaw = 0;
+	static int8_t search_direction = 1;
 
 	measured_dt_ms = DT_MS;
 
@@ -1838,7 +1850,7 @@ void PID_ControlTask(void) {
 		acc_angle_hr = (int32_t) ax_filt * 35;
 	}
 
-	gyro_delta_hr = (-(int32_t) gy * 200) / 131;
+	gyro_delta_hr = (-(int32_t) gy * 50) / 131;
 	current_angle_hr = (ALPHA_GYRO * (current_angle_hr + gyro_delta_hr)
 			+ ALPHA_ACC * acc_angle_hr) / 1000;
 
@@ -1863,7 +1875,7 @@ void PID_ControlTask(void) {
 
 	if (robotMode == STATE_DODGE) {
 		// --- MÁQUINA DE ESTADOS DE ROTACIÓN DE DODGE ---
-		target_setpoint = setpoint; // Mantener balance estático en su lugar
+		target_setpoint = -860; // Mantener balance estático en su lugar (-860 para rotaciones de modo 2)
 
 		// Integración de yaw continua usando gz calibrado
 		int32_t gz_calibrated = gz - gz_offset;
@@ -1926,6 +1938,8 @@ void PID_ControlTask(void) {
 					line_lost_debounce_count = 0;
 					line_lost_timer = 0;
 					line_lost_phase = 0;
+					line_lost_yaw = 0;
+					search_direction = (last_line_error >= 0) ? 1 : -1;
 					lineState = LINE_LOST;
 					recovery_cycles = 0;
 					break;
@@ -1958,7 +1972,7 @@ void PID_ControlTask(void) {
 			} else {
 				// Si la inclinación frontal supera el límite de gatillo (numéricamente menor al trigger de recuperación)
 				if (current_angle < recovery_trigger_angle) {
-					recovery_cycles = 12;       // Iniciar periodo de recuperación de ~250 ms (12 ciclos x 20ms = 240ms)
+					recovery_cycles = 50;       // Iniciar periodo de recuperación de 250 ms (50 ciclos x 5ms = 250ms)
 					target_setpoint = recovery_target_angle;  // Ángulo de recuperación dinámico inmediato
 				} else {
 					target_setpoint = attack_setpoint;  // En condiciones normales, setear el ángulo de ataque dinámico de Qt
@@ -1973,22 +1987,41 @@ void PID_ControlTask(void) {
 				break;
 			}
 
+			// Integración del ángulo de yaw usando el giroscopio Z (gz) y su offset
+			{
+				int32_t gz_cal = gz - gz_offset;
+				line_lost_yaw += ((int64_t)gz_cal * DT_US) / 131000LL;
+			}
+
+			// Configurar setpoint de equilibrio idéntico al del modo DODGE
+			target_setpoint = -860;
+
 			if (line_lost_phase == 0) {
-				turn_offset = (last_line_error > 0) ? custom_turn : -custom_turn;
-				line_lost_timer++;
-				if (line_lost_timer >= LINE_LOST_PHASE0) {
-					line_lost_timer = 0;
+				// Rotar 30 grados hacia el lado de la línea (en el sentido de search_direction)
+				turn_offset = (search_direction > 0) ? 350 : -350;
+				int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
+				if (abs_yaw >= 30000) { // 30 grados = 30,000 miligrados
+					line_lost_yaw = 0;
 					line_lost_phase = 1;
 				}
 			} else if (line_lost_phase == 1) {
-				turn_offset = (last_line_error > 0) ? -custom_turn : custom_turn;
-				line_lost_timer++;
-				if (line_lost_timer >= LINE_LOST_PHASE1) {
+				// Rotar 60 grados hacia el otro lado (opuesto a search_direction)
+				turn_offset = (search_direction > 0) ? -350 : 350;
+				int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
+				if (abs_yaw >= 60000) { // 60 grados = 60,000 miligrados
 					line_lost_timer = 0;
 					line_lost_phase = 2;
 				}
+			} else if (line_lost_phase == 2) {
+				// Rotar en el lugar por 5 segundos (1000 ciclos de 5ms = 5000ms)
+				turn_offset = (search_direction > 0) ? -350 : 350;
+				line_lost_timer++;
+				if (line_lost_timer >= 1000) {
+					line_lost_phase = 3;
+				}
 			} else {
-				turn_offset = (last_line_error > 0) ? -custom_turn : custom_turn;
+				// Parar motores
+				turn_offset = 0;
 			}
 			break;
 
@@ -2049,39 +2082,51 @@ void PID_ControlTask(void) {
 	int32_t pwm_left = 0;
 	int32_t pwm_right = 0;
 
+	uint16_t active_minPWM_Left = minPWM_Left;
+	uint16_t active_minPWM_Right = minPWM_Right;
+
+	if (robotMode == STATE_DODGE) {
+		active_minPWM_Left = 1350;
+		active_minPWM_Right = 750;
+	}
+
 	if (robotMode == STATE_DODGE && dodgeState == DODGE_ROTATING) {
 		// Modo rotación de DODGE con balanceo prioritario y compensación de fricción
 		if (output > 0) {
-			pwm_left = output + minPWM_Left + offset_left + turn_offset;
-			pwm_right = output + minPWM_Right + offset_right - turn_offset;
+			pwm_left = output + active_minPWM_Left + offset_left + turn_offset;
+			pwm_right = output + active_minPWM_Right + offset_right - turn_offset;
 		} else if (output < 0) {
-			pwm_left = output - minPWM_Left - offset_left + turn_offset;
-			pwm_right = output - minPWM_Right - offset_right - turn_offset;
+			pwm_left = output - active_minPWM_Left - offset_left + turn_offset;
+			pwm_right = output - active_minPWM_Right - offset_right - turn_offset;
 		} else {
-			pwm_left = minPWM_Left + offset_left + turn_offset;
-			pwm_right = -minPWM_Right - offset_right - turn_offset;
+			pwm_left = active_minPWM_Left + offset_left + turn_offset;
+			pwm_right = -active_minPWM_Right - offset_right - turn_offset;
 		}
 	} else {
 		uint8_t is_rotating = (lineState == LINE_LOST || lineState == LINE_SEARCHING);
 
 		if (is_rotating) {
+			// Determinar mínimos de rotación según el estado de la línea (usar parámetros de DODGE si se perdió la línea)
+			uint16_t rot_min_L = (lineState == LINE_LOST) ? 1350 : PWM_LRot;
+			uint16_t rot_min_R = (lineState == LINE_LOST) ? 750 : PWM_RRot;
+
 			// Modo pivote seguro
 			int32_t raw_L = output + turn_offset;
 			int32_t raw_R = output - turn_offset;
 
-			if (raw_L > 0)       pwm_left = raw_L + PWM_LRot + offset_left;
-			else if (raw_L < 0)  pwm_left = raw_L - PWM_LRot - offset_left;
+			if (raw_L > 0)       pwm_left = raw_L + rot_min_L + offset_left;
+			else if (raw_L < 0)  pwm_left = raw_L - rot_min_L - offset_left;
 
-			if (raw_R > 0)       pwm_right = raw_R + PWM_RRot + offset_right;
-			else if (raw_R < 0)  pwm_right = raw_R - PWM_RRot - offset_right;
+			if (raw_R > 0)       pwm_right = raw_R + rot_min_R + offset_right;
+			else if (raw_R < 0)  pwm_right = raw_R - rot_min_R - offset_right;
 		} else {
 			// Modo avance normal
 			if (output > 0) {
-				pwm_left = output + minPWM_Left + offset_left;
-				pwm_right = output + minPWM_Right + offset_right;
+				pwm_left = output + active_minPWM_Left + offset_left;
+				pwm_right = output + active_minPWM_Right + offset_right;
 			} else if (output < 0) {
-				pwm_left = output - minPWM_Left - offset_left;
-				pwm_right = output - minPWM_Right - offset_right;
+				pwm_left = output - active_minPWM_Left - offset_left;
+				pwm_right = output - active_minPWM_Right - offset_right;
 			}
 
 			if (output != 0) {
@@ -2098,7 +2143,7 @@ void PID_ControlTask(void) {
 
 	// --- IMPULSO DIRECTO DE RECUPERACIÓN TRASERA (Bypass del Balanceo) ---
 	if (backwards_recovery_active) {
-		pwm_left = -3000;  // Impulso directo marcha atrás controlado (20% duty cycle)
+		pwm_left = -3000;  // Impulso directo marcha atrás controlado (30% duty cycle)
 		pwm_right = -3000;
 		integral = 0;      // Resetear integrador para evitar descontrol al volver a balancear
 		last_error = 0;
@@ -2130,8 +2175,9 @@ void PID_ControlTask(void) {
 	if (pwm_right > (int32_t) maxPWM)  pwm_right = (int32_t) maxPWM;
 	if (pwm_right < -(int32_t) maxPWM) pwm_right = -(int32_t) maxPWM;
 
-	// Silenciado de motores si no estamos en un modo de movimiento
-	if (robotMode != STATE_SWING && robotMode != STATE_LINE_FOLLOWING && robotMode != STATE_DODGE) {
+	// Silenciado de motores si no estamos en un modo de movimiento o si se detuvo por pérdida de línea
+	if ((robotMode != STATE_SWING && robotMode != STATE_LINE_FOLLOWING && robotMode != STATE_DODGE) ||
+		(robotMode == STATE_LINE_FOLLOWING && lineState == LINE_LOST && line_lost_phase == 3)) {
 		pwm_left = 0;
 		pwm_right = 0;
 		integral = 0;
@@ -2613,7 +2659,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 71;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 9999;
+  htim2.Init.Period = 4999;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
