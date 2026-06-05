@@ -150,6 +150,13 @@ typedef enum {
 #define LINE_LOST_PHASE0    35       // Duración de la primera fase de búsqueda en ciclos
 #define LINE_LOST_PHASE1    70       // Duración de la segunda fase de búsqueda en ciclos
 
+// Estados para la sub-MEF de pérdida de línea
+#define LINE_LOST_ROT_30      0
+#define LINE_LOST_WAIT        1
+#define LINE_LOST_ROT_60      2
+#define LINE_LOST_ROT_TOTAL   3
+#define LINE_LOST_WAIT_FINAL  4
+
 // =========================================================
 // //LUT
 // =========================================================
@@ -1867,9 +1874,9 @@ void PID_ControlTask(void) {
 	int32_t target_setpoint = setpoint; 
 	turn_offset = 0;
 
-	uint8_t ir1_active = (left_ir > IR_WHITE);
-	uint8_t ir3_active = (center_ir > IR_WHITE);
-	uint8_t ir5_active = (right_ir > IR_WHITE);
+	uint8_t ir1_active = (left_ir < IR_WHITE);
+	uint8_t ir3_active = (center_ir < IR_WHITE);
+	uint8_t ir5_active = (right_ir < IR_WHITE);
 	uint8_t active_count = ir1_active + ir3_active + ir5_active;
 
 	static uint16_t recovery_cycles = 0; // Contador de ciclos de recuperación de balance estático
@@ -1938,9 +1945,9 @@ void PID_ControlTask(void) {
 				if (line_lost_debounce_count >= 6) {
 					line_lost_debounce_count = 0;
 					line_lost_timer = 0;
-					line_lost_phase = 0;
+					line_lost_phase = LINE_LOST_ROT_30;
 					line_lost_yaw = 0;
-					search_direction = (last_line_error >= 0) ? 1 : -1;
+					search_direction = (last_line_error >= 0) ? -1 : 1;
 					lineState = LINE_LOST;
 					recovery_cycles = 0;
 					break;
@@ -1994,35 +2001,65 @@ void PID_ControlTask(void) {
 				line_lost_yaw += ((int64_t)gz_cal * DT_US) / 131000LL;
 			}
 
-			// Configurar setpoint de equilibrio idéntico al del modo DODGE
-			target_setpoint = -860;
+			// Configurar setpoint de equilibrio menos inclinado para evitar cabeceo excesivo
+			target_setpoint = -300;
 
-			if (line_lost_phase == 0) {
+			switch (line_lost_phase) {
+			case LINE_LOST_ROT_30:
 				// Rotar 30 grados hacia el lado de la línea (en el sentido de search_direction)
 				turn_offset = (search_direction > 0) ? 350 : -350;
-				int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
-				if (abs_yaw >= 30000) { // 30 grados = 30,000 miligrados
-					line_lost_yaw = 0;
-					line_lost_phase = 1;
+				{
+					int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
+					if (abs_yaw >= 30000) { // 30 grados = 30,000 miligrados
+						line_lost_yaw = 0;
+						line_lost_timer = 0;
+						line_lost_phase = LINE_LOST_WAIT;
+					}
 				}
-			} else if (line_lost_phase == 1) {
+				break;
+
+			case LINE_LOST_WAIT:
+				// Detener rotación durante 500 ms (100 ciclos x 5 ms = 500 ms)
+				turn_offset = 0;
+				line_lost_timer++;
+				if (line_lost_timer >= 100) {
+					line_lost_yaw = 0;
+					line_lost_timer = 0;
+					line_lost_phase = LINE_LOST_ROT_60;
+				}
+				break;
+
+			case LINE_LOST_ROT_60:
 				// Rotar 60 grados hacia el otro lado (opuesto a search_direction)
 				turn_offset = (search_direction > 0) ? -350 : 350;
-				int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
-				if (abs_yaw >= 60000) { // 60 grados = 60,000 miligrados
-					line_lost_timer = 0;
-					line_lost_phase = 2;
+				{
+					int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
+					if (abs_yaw >= 60000) { // 60 grados = 60,000 miligrados
+						line_lost_yaw = 0;
+						line_lost_timer = 0;
+						line_lost_phase = LINE_LOST_ROT_TOTAL;
+					}
 				}
-			} else if (line_lost_phase == 2) {
-				// Rotar en el lugar por 5 segundos (1000 ciclos de 5ms = 5000ms)
-				turn_offset = (search_direction > 0) ? -350 : 350;
-				line_lost_timer++;
-				if (line_lost_timer >= 1000) {
-					line_lost_phase = 3;
+				break;
+
+			case LINE_LOST_ROT_TOTAL:
+				// Rotar 360 grados en sentido contrario al caso de 60 grados (es decir, en el sentido de search_direction)
+				turn_offset = (search_direction > 0) ? 350 : -350;
+				{
+					int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
+					if (abs_yaw >= 360000) { // 360 grados = 360,000 miligrados
+						line_lost_yaw = 0;
+						line_lost_timer = 0;
+						line_lost_phase = LINE_LOST_WAIT_FINAL;
+					}
 				}
-			} else {
+				break;
+
+			case LINE_LOST_WAIT_FINAL:
+			default:
 				// Parar motores
 				turn_offset = 0;
+				break;
 			}
 			break;
 
@@ -2108,7 +2145,7 @@ void PID_ControlTask(void) {
 
 		if (is_rotating) {
 			// Determinar mínimos de rotación según el estado de la línea (usar parámetros de DODGE si se perdió la línea)
-			uint16_t rot_min_L = (lineState == LINE_LOST) ? 1350 : PWM_LRot;
+			uint16_t rot_min_L = (lineState == LINE_LOST) ? 770 : PWM_LRot;
 			uint16_t rot_min_R = (lineState == LINE_LOST) ? 750 : PWM_RRot;
 
 			// Modo pivote seguro
@@ -2178,7 +2215,7 @@ void PID_ControlTask(void) {
 
 	// Silenciado de motores si no estamos en un modo de movimiento o si se detuvo por pérdida de línea
 	if ((robotMode != STATE_SWING && robotMode != STATE_LINE_FOLLOWING && robotMode != STATE_DODGE) ||
-		(robotMode == STATE_LINE_FOLLOWING && lineState == LINE_LOST && line_lost_phase == 3)) {
+		(robotMode == STATE_LINE_FOLLOWING && lineState == LINE_LOST && line_lost_phase == LINE_LOST_WAIT_FINAL)) {
 		pwm_left = 0;
 		pwm_right = 0;
 		integral = 0;
