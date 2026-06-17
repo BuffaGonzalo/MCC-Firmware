@@ -370,8 +370,16 @@ int16_t offset_right = 0;                             // Offset para compensaci�
 
 int32_t setpoint = -1000;                                // Setpoint de equilibrio estático base (x100 = 0.5°) ajustable por Qt
 int16_t attack_setpoint = -1600;                      // Setpoint de inclinación frontal para ataque (configurable por Qt)
-int16_t recovery_trigger_angle = -1400;               // Ángulo de inclinación que dispara la recuperación (configurable por Qt, x100 = -15.00°)
-int16_t recovery_target_angle = -600;                 // Ángulo al que se recupera durante la ventana de 250ms (configurable por Qt, x100 = -5.00°)
+
+/* Variables del Lazo Cascada Externo */
+int32_t pwm_filtrado = 0;                             // Esfuerzo de motor filtrado LPF (Lazo Lento)
+int32_t integral_esfuerzo = 0;                         // Integral de error de esfuerzo para lazo externo
+int16_t angulo_modificador_pi = 0;                     // Corrección de ángulo calculado por PI (x100)
+
+/* Parámetros configurables del Lazo Externo */
+int16_t Kp_ext = 0;                                   // Ganancia proporcional de lazo externo (x1000)
+int16_t Ki_ext = 0;                                   // Ganancia integral de lazo externo (x10000)
+int16_t alfa_lpf = 10;                                // Coeficiente alfa del filtro LPF (0-100)
 
 // =========================================================
 // //SEGUIDOR
@@ -388,7 +396,6 @@ int32_t quad_term = 0;                                // Aporte cuadrático/deri
 int32_t turn_offset = 0;                              // Fuerza de rotación mezclada con el PID y enviada a los motores (Yaw)
 int32_t last_line_error = 0;                          // Error de línea del ciclo anterior
 int16_t custom_turn = 1;                              // Intensidad de giro prefijada para fases ciegas de búsqueda
-int16_t turn_divisor = 4;                             // Divisor del esfuerzo de giro para atenuar la severidad del desvío
 int16_t vel_damp_div = 500;                           // Divisor del término amortiguador de velocidad
 int16_t vel_damp_limit = 100;                         // Límite del amortiguador de velocidad
 int16_t turn_limit = 1000;                            // Límite superior absoluto del esfuerzo de giro motor (Yaw)
@@ -790,15 +797,15 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((params_rot[i] >> 8) & 0xFF));
 		}
 
-		// 6. Nuevos Parámetros (4 bytes: angle_limit, turn_divisor)
-		int16_t new_params[2] = { 0, turn_divisor };
+		// 6. Nuevos Parámetros (4 bytes: angle_limit, Kp_ext)
+		int16_t new_params[2] = { 0, Kp_ext };
 		for (int i = 0; i < 2; i++) {
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (new_params[i] & 0xFF));
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((new_params[i] >> 8) & 0xFF));
 		}
 
-		// 7. Anti-collapse Setpoints (4 bytes: save_min, save_max) -> Ahora dinámicos de recuperación
-		int16_t save_params[2] = { recovery_trigger_angle, recovery_target_angle };
+		// 7. Anti-collapse Setpoints (4 bytes: Ki_ext, alfa_lpf)
+		int16_t save_params[2] = { Ki_ext, alfa_lpf };
 		for (int i = 0; i < 2; i++) {
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (save_params[i] & 0xFF));
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((save_params[i] >> 8) & 0xFF));
@@ -967,13 +974,13 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		PWM_RRot = myWord.ui16[0];
 		break;
-	case SETTURNDIV:
-		unerPrtcl_PutHeaderOnTx(dataTx, SETTURNDIV, 2);
+	case SET_KP_EXT:
+		unerPrtcl_PutHeaderOnTx(dataTx, SET_KP_EXT, 2);
 		unerPrtcl_PutByteOnTx(dataTx, ACK);
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
 		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
-		turn_divisor = myWord.i16[0];
+		Kp_ext = myWord.i16[0];
 		break;
 	case SETLIMITANG:
 		unerPrtcl_PutHeaderOnTx(dataTx, SETLIMITANG, 2);
@@ -982,21 +989,21 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		break;
-	case SETPOINTSAVEMIN:
-		unerPrtcl_PutHeaderOnTx(dataTx, SETPOINTSAVEMIN, 2);
+	case SET_KI_EXT:
+		unerPrtcl_PutHeaderOnTx(dataTx, SET_KI_EXT, 2);
 		unerPrtcl_PutByteOnTx(dataTx, ACK);
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
 		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
-		recovery_trigger_angle = myWord.i16[0];
+		Ki_ext = myWord.i16[0];
 		break;
-	case SETPOINTSAVEMAX:
-		unerPrtcl_PutHeaderOnTx(dataTx, SETPOINTSAVEMAX, 2);
+	case SET_ALFA_LPF:
+		unerPrtcl_PutHeaderOnTx(dataTx, SET_ALFA_LPF, 2);
 		unerPrtcl_PutByteOnTx(dataTx, ACK);
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
 		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
-		recovery_target_angle = myWord.i16[0];
+		alfa_lpf = myWord.i16[0];
 		break;
 	case SETVELDAMPDIV:
 		unerPrtcl_PutHeaderOnTx(dataTx, SETVELDAMPDIV, 2);
@@ -1810,6 +1817,7 @@ void PID_ControlTask(void) {
 	static int32_t last_turn_offset = 0;
 	static int32_t line_lost_yaw = 0;
 	static int8_t search_direction = 1;
+	static int32_t last_angle = 0;
 
 	measured_dt_ms = DT_MS;
 
@@ -1879,8 +1887,6 @@ void PID_ControlTask(void) {
 	uint8_t ir5_active = (right_ir < IR_WHITE);
 	uint8_t active_count = ir1_active + ir3_active + ir5_active;
 
-	static uint16_t recovery_cycles = 0; // Contador de ciclos de recuperación de balance estático
-
 	if (robotMode == STATE_DODGE) {
 		// --- MÁQUINA DE ESTADOS DE ROTACIÓN DE DODGE ---
 		target_setpoint = -860; // Mantener balance estático en su lugar (-860 para rotaciones de modo 2)
@@ -1925,7 +1931,6 @@ void PID_ControlTask(void) {
 		switch (lineState) {
 
 		case LINE_SEARCHING:
-			recovery_cycles = 0; // Resetear temporizador al buscar la línea
 			if (ir3_active) {
 				lineState = LINE_FOLLOWING;
 			} else {
@@ -1936,7 +1941,6 @@ void PID_ControlTask(void) {
 		case LINE_FOLLOWING:
 			if (active_count == 3 && ir1_active && ir3_active && ir5_active) {
 				lineState = LINE_CROSS;
-				recovery_cycles = 0;
 				break;
 			}
 
@@ -1949,7 +1953,6 @@ void PID_ControlTask(void) {
 					line_lost_yaw = 0;
 					search_direction = (last_line_error >= 0) ? -1 : 1;
 					lineState = LINE_LOST;
-					recovery_cycles = 0;
 					break;
 				}
 				error_linea = last_line_error;
@@ -1960,12 +1963,10 @@ void PID_ControlTask(void) {
 				error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors) / 10;
 				abs_error = (error_linea > 0) ? error_linea : -error_linea;
 
-				linear_term = Kp_line * error_linea;
-				quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
+				int32_t linear_term = (Kp_line * error_linea);
+				int32_t quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
 
-				if (turn_divisor == 0) turn_divisor = 1;
-				turn_offset = (linear_term + quad_term) / turn_divisor;
-
+				turn_offset = linear_term + quad_term;
 				if (turn_offset > turn_limit)        turn_offset = turn_limit;
 				else if (turn_offset < -turn_limit)  turn_offset = -turn_limit;
 
@@ -1973,23 +1974,10 @@ void PID_ControlTask(void) {
 			}
 			last_line_error = error_linea;
 
-			// Si está activo el temporizador de recuperación de 250ms
-			if (recovery_cycles > 0) {
-				recovery_cycles--;
-				target_setpoint = recovery_target_angle;  // Ángulo de recuperación dinámico de Qt
-			} else {
-				// Si la inclinación frontal supera el límite de gatillo (numéricamente menor al trigger de recuperación)
-				if (current_angle < recovery_trigger_angle) {
-					recovery_cycles = 50;       // Iniciar periodo de recuperación de 250 ms (50 ciclos x 5ms = 250ms)
-					target_setpoint = recovery_target_angle;  // Ángulo de recuperación dinámico inmediato
-				} else {
-					target_setpoint = attack_setpoint;  // En condiciones normales, setear el ángulo de ataque dinámico de Qt
-				}
-			}
+			target_setpoint = attack_setpoint;
 			break;
 
 		case LINE_LOST:
-			recovery_cycles = 0; // Resetear temporizador al perder la línea
 			if (ir3_active) {
 				lineState = LINE_FOLLOWING;
 				break;
@@ -2064,7 +2052,6 @@ void PID_ControlTask(void) {
 			break;
 
 		case LINE_CROSS:
-			recovery_cycles = 0; // Resetear temporizador al cruzar
 			if (active_count < 3) {
 				lineState = LINE_FOLLOWING;
 				break;
@@ -2072,7 +2059,6 @@ void PID_ControlTask(void) {
 			break;
 
 		default:
-			recovery_cycles = 0;
 			lineState = LINE_SEARCHING;
 			break;
 		}
@@ -2097,10 +2083,53 @@ void PID_ControlTask(void) {
 	}
 
 	// =========================================================
+	// --- LAZO DE CONTROL EN CASCADA EXTERNO (Cada 40ms) ---
+	// =========================================================
+	if (robotMode == STATE_LINE_FOLLOWING) {
+		static uint8_t slow_loop_counter = 0;
+		slow_loop_counter++;
+		if (slow_loop_counter >= 8) { // 8 * 5ms = 40ms
+			slow_loop_counter = 0;
+
+			// 1. Filtro pasa-bajos sobre la acción de control del motor (output)
+			// Nota: 'output' no incluye el minPWM, por lo que su valor base es bajito.
+			pwm_filtrado = (alfa_lpf * output + (100 - alfa_lpf) * pwm_filtrado) / 100;
+
+			// 2. Error de esfuerzo (Velocidad deseada es attack_setpoint, esfuerzo real es pwm_filtrado)
+			int32_t effort_error = (int32_t)attack_setpoint - pwm_filtrado;
+
+			// 3. Acumulación con límites anti-windup estrictos (+/- 50000)
+			integral_esfuerzo += effort_error;
+			if (integral_esfuerzo > 50000)  integral_esfuerzo = 50000;
+			if (integral_esfuerzo < -50000) integral_esfuerzo = -50000;
+
+			// 4. Salida PI (escalada a x100 para coincidir con el setpoint)
+			int32_t prop_term = (Kp_ext * effort_error) / 1000;
+			int32_t int_term = (Ki_ext * integral_esfuerzo) / 10000;
+			int32_t out_pi = prop_term + int_term;
+
+			// Saturación del modificador a un límite de +/- 15.00 grados (1500 centésimas)
+			if (out_pi > 1500)  out_pi = 1500;
+			if (out_pi < -1500) out_pi = -1500;
+
+			angulo_modificador_pi = (int16_t)out_pi;
+		}
+
+		// Sumar el modificador dinámico al target_setpoint
+		target_setpoint += angulo_modificador_pi;
+	} else {
+		// Reiniciar variables si no estamos en modo seguidor de línea
+		pwm_filtrado = 0;
+		integral_esfuerzo = 0;
+		angulo_modificador_pi = 0;
+	}
+
+	// =========================================================
 	// --- 4. LAZO PID CENTRAL (Equilibrio Balancín Puro) ---
 	// =========================================================
 	error = target_setpoint - current_angle;
-	derivative = (int32_t)(((int64_t)(error - last_error) * 1000000LL) / DT_US);
+	// Derivada sobre la medición (Derivative on Measurement) para evitar el Derivative Kick
+	derivative = (int32_t)(((int64_t)(last_angle - current_angle) * 1000000LL) / DT_US);
 
 	if (error > -150 && error < 150) {
 		integral += (error * (int32_t)DT_US) / 1000;
@@ -2113,6 +2142,7 @@ void PID_ControlTask(void) {
 	output = (Kp_stable * error + (Ki_stable * integral) / 1000
 			+ (Kd_stable * derivative)) / 10000;
 	last_error = error;
+	last_angle = current_angle;
 
 	// =========================================================
 	// --- 5. MEZCLA DE MOTORES (Potencia de salida) ---
