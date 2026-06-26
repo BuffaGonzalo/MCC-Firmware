@@ -1889,50 +1889,16 @@ void PID_ControlTask(void) {
 	uint8_t ir5_active = (right_ir < IR_WHITE);
 	uint8_t active_count = ir1_active + ir3_active + ir5_active;
 
-	if (robotMode == STATE_DODGE) {
-		// --- MÁQUINA DE ESTADOS DE ROTACIÓN DE DODGE ---
-		target_setpoint = -1700; // Mantener balance estático en su lugar (-1200 para rotaciones de modo 2)
+	switch (robotMode) {
+	case STATE_SWING:
+		// --- MODO 1: BALANCEO ESTÁTICO ---
+		turn_offset = 0;
+		target_setpoint = setpoint; // Forzar setpoint de equilibrio estático puro de Qt (0.5°)
+		break;
 
-		// Integración de yaw continua usando gz calibrado
-		int32_t gz_calibrated = gz - gz_offset;
-		dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
-
-		switch (dodgeState) {
-		case DODGE_INIT:
-			dodge_yaw = 0;
-			dodge_timer = 0;
-			dodgeState = DODGE_ROTATING;
-			break;
-
-		case DODGE_ROTATING:
-			{
-				int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
-				if (abs_yaw >= 90000) { // 90 grados = 90,000 miligrados
-					turn_offset = 0;
-					dodge_timer = 0;
-					dodge_direction = -dodge_direction; // Alternar dirección para la siguiente rotación
-					dodgeState = DODGE_PAUSE;
-				} else {
-					turn_offset = 350 * dodge_direction; // Esfuerzo de giro constante sobre el propio eje alternado
-				}
-			}
-			break;
-
-		case DODGE_PAUSE:
-			turn_offset = 0;
-			dodge_timer += DT_US;
-			if (dodge_timer >= 4000000) { // 4000ms = 4,000,000us
-				dodgeState = DODGE_INIT;
-			}
-			break;
-
-		default:
-			dodgeState = DODGE_INIT;
-			break;
-		}
-	} else {
+	case STATE_LINE_FOLLOWING:
+		// --- MODO 2: SEGUIMIENTO DE LÍNEA ---
 		switch (lineState) {
-
 		case LINE_SEARCHING:
 			if (ir3_active) {
 				lineState = LINE_FOLLOWING;
@@ -2065,12 +2031,57 @@ void PID_ControlTask(void) {
 			lineState = LINE_SEARCHING;
 			break;
 		}
-	}
+		break;
 
-	// Forzar balanceo estático en el lugar en modo STATE_SWING (evitar giros y avances de ataque)
-	if (robotMode == STATE_SWING) {
+	case STATE_DODGE:
+		// --- MODO 3: ESQUIVADO DE OBSTÁCULOS (DODGE) ---
+		target_setpoint = 0; // Mantener balance estático en su lugar (-150 = -1.50 grados)
+		// Integración de yaw continua usando gz calibrado
+		{
+			int32_t gz_calibrated = gz - gz_offset;
+			dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
+		}
+
+		switch (dodgeState) {
+		case DODGE_INIT:
+			dodge_yaw = 0;
+			dodge_timer = 0;
+			dodgeState = DODGE_ROTATING;
+			break;
+
+		case DODGE_ROTATING:
+			{
+				int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
+				if (abs_yaw >= 90000) { // 90 grados = 90,000 miligrados
+					turn_offset = 0;
+					dodge_timer = 0;
+					dodge_direction = -dodge_direction; // Alternar dirección para la siguiente rotación
+					dodgeState = DODGE_PAUSE;
+				} else {
+					turn_offset = 350 * dodge_direction; // Esfuerzo de giro constante sobre el propio eje alternado
+				}
+			}
+			break;
+
+		case DODGE_PAUSE:
+			turn_offset = 0;
+			dodge_timer += DT_US;
+			if (dodge_timer >= 4000000) { // 4000ms = 4,000,000us
+				dodgeState = DODGE_INIT;
+			}
+			break;
+
+		default:
+			dodgeState = DODGE_INIT;
+			break;
+		}
+		break;
+
+	default:
+		// Para otros modos o estados no definidos
 		turn_offset = 0;
-		target_setpoint = setpoint; // Forzar setpoint de equilibrio estático puro de Qt (0.5°)
+		target_setpoint = setpoint;
+		break;
 	}
 
 	// --- CONTROL DE PREVENCIÓN DE CAÍDA TRASERA (Lógica del Gatillo) ---
@@ -2158,11 +2169,15 @@ void PID_ControlTask(void) {
 
 	if (robotMode == STATE_DODGE) {
 		if (dodge_direction == 1) {
-			active_minPWM_Left = 800;
-			active_minPWM_Right = 1025;
+			//active_minPWM_Left = 800;
+			//active_minPWM_Right = 1025;
+			active_minPWM_Left = 0;
+			active_minPWM_Right = 2025;
 		} else {
-			active_minPWM_Left = 1000;
-			active_minPWM_Right = 1225;
+			active_minPWM_Left = 1800;
+			active_minPWM_Right = 0;
+			//active_minPWM_Left = 1000;
+			//active_minPWM_Right = 1225;
 		}
 	}
 
