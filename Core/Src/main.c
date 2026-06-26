@@ -312,6 +312,7 @@ static uint8_t udpReadyToStart = 0;                   // Bandera que indica que 
 // //REDES
 // =========================================================
 static const _sWiFiNetwork knownNetworks[] = {
+	{ "FCAL-Personal", "fcal-uner+2019",       "172.22.237.227" },
 	{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.10"   },
 	{ "FCAL",    "fcalconcordia.06-2019",    "172.23.190.89"  },
 	{ "SA04",    "12345678",                "10.93.92.213"   },
@@ -361,8 +362,8 @@ int16_t Kd_stable = 2;                                // Ganancia derivativa de 
 int16_t Ki_stable = 0;                                // Ganancia integral de equilibrio estático (revertido al valor original)
 
 uint16_t maxPWM = 9999;                               // Ciclo de trabajo máximo permitido (100%)
-uint16_t minPWM_Left = 870;                           // PWM mínimo que vence la fricción estática de la rueda izquierda
-uint16_t minPWM_Right = 1000;                         // PWM mínimo que vence la fricción estática de la rueda derecha
+uint16_t minPWM_Left = 800;                           // PWM mínimo que vence la fricción estática de la rueda izquierda
+uint16_t minPWM_Right = 1025;                         // PWM mínimo que vence la fricción estática de la rueda derecha
 uint16_t PWM_LRot = 880;                              // PWM estático de pivote de giro en búsqueda para rueda izquierda
 uint16_t PWM_RRot = 800;                              // PWM estático de pivote de giro en búsqueda para rueda derecha
 int16_t offset_left = 0;                              // Offset para compensación de deriva de tracción del motor izquierdo
@@ -1818,15 +1819,16 @@ void PID_ControlTask(void) {
 	static int32_t line_lost_yaw = 0;
 	static int8_t search_direction = 1;
 	static int32_t last_angle = 0;
+	static int8_t dodge_direction = 1;
 
 	measured_dt_ms = DT_MS;
 
 	// =========================================================
 	// --- 1. LECTURA DIRECTA DE SENSORES DE LÍNEA ---
 	// =========================================================
-	uint16_t raw_left   = adcData[1];
-	uint16_t raw_center = adcData[3];
-	uint16_t raw_right  = adcData[5];
+	uint16_t raw_left   = adcDataTx[1];
+	uint16_t raw_center = adcDataTx[3];
+	uint16_t raw_right  = adcDataTx[5];
 
 	// Normalización e interpolación directa por LUT
 	uint16_t raw_sensors[4] = {
@@ -1889,7 +1891,7 @@ void PID_ControlTask(void) {
 
 	if (robotMode == STATE_DODGE) {
 		// --- MÁQUINA DE ESTADOS DE ROTACIÓN DE DODGE ---
-		target_setpoint = -860; // Mantener balance estático en su lugar (-860 para rotaciones de modo 2)
+		target_setpoint = -1700; // Mantener balance estático en su lugar (-1200 para rotaciones de modo 2)
 
 		// Integración de yaw continua usando gz calibrado
 		int32_t gz_calibrated = gz - gz_offset;
@@ -1908,9 +1910,10 @@ void PID_ControlTask(void) {
 				if (abs_yaw >= 90000) { // 90 grados = 90,000 miligrados
 					turn_offset = 0;
 					dodge_timer = 0;
+					dodge_direction = -dodge_direction; // Alternar dirección para la siguiente rotación
 					dodgeState = DODGE_PAUSE;
 				} else {
-					turn_offset = 350; // Esfuerzo de giro constante sobre el propio eje
+					turn_offset = 350 * dodge_direction; // Esfuerzo de giro constante sobre el propio eje alternado
 				}
 			}
 			break;
@@ -1918,7 +1921,7 @@ void PID_ControlTask(void) {
 		case DODGE_PAUSE:
 			turn_offset = 0;
 			dodge_timer += DT_US;
-			if (dodge_timer >= 500000) { // 500ms = 500,000us
+			if (dodge_timer >= 4000000) { // 4000ms = 4,000,000us
 				dodgeState = DODGE_INIT;
 			}
 			break;
@@ -2073,9 +2076,9 @@ void PID_ControlTask(void) {
 	// --- CONTROL DE PREVENCIÓN DE CAÍDA TRASERA (Lógica del Gatillo) ---
 	static uint8_t backwards_recovery_active = 0;
 	if (robotMode == STATE_SWING || robotMode == STATE_LINE_FOLLOWING || robotMode == STATE_DODGE) {
-		if (current_angle > 500) { // Si la inclinación trasera supera 5.00° (500)
+		if (current_angle > 0) { // Si la inclinación trasera supera 0.00° (0)
 			backwards_recovery_active = 1;
-		} else if (current_angle <= 500) {
+		} else if (current_angle <= 0) {
 			backwards_recovery_active = 0;
 		}
 	} else {
@@ -2154,8 +2157,13 @@ void PID_ControlTask(void) {
 	uint16_t active_minPWM_Right = minPWM_Right;
 
 	if (robotMode == STATE_DODGE) {
-		active_minPWM_Left = 1350;
-		active_minPWM_Right = 750;
+		if (dodge_direction == 1) {
+			active_minPWM_Left = 800;
+			active_minPWM_Right = 1025;
+		} else {
+			active_minPWM_Left = 1000;
+			active_minPWM_Right = 1225;
+		}
 	}
 
 	if (robotMode == STATE_DODGE && dodgeState == DODGE_ROTATING) {
@@ -2167,8 +2175,8 @@ void PID_ControlTask(void) {
 			pwm_left = output - active_minPWM_Left - offset_left + turn_offset;
 			pwm_right = output - active_minPWM_Right - offset_right - turn_offset;
 		} else {
-			pwm_left = active_minPWM_Left + offset_left + turn_offset;
-			pwm_right = -active_minPWM_Right - offset_right - turn_offset;
+			pwm_left = ((int32_t)active_minPWM_Left * dodge_direction) + offset_left + turn_offset;
+			pwm_right = (-(int32_t)active_minPWM_Right * dodge_direction) - offset_right - turn_offset;
 		}
 	} else {
 		uint8_t is_rotating = (lineState == LINE_LOST || lineState == LINE_SEARCHING);
