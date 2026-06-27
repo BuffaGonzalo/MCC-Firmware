@@ -1959,7 +1959,7 @@ void PID_ControlTask(void) {
 			}
 
 			// Configurar setpoint de equilibrio menos inclinado para evitar cabeceo excesivo
-			target_setpoint = -300;
+			target_setpoint = -100;
 
 			switch (line_lost_phase) {
 			case LINE_LOST_ROT_30:
@@ -2035,7 +2035,7 @@ void PID_ControlTask(void) {
 
 	case STATE_DODGE:
 		// --- MODO 3: ESQUIVADO DE OBSTÁCULOS (DODGE) ---
-		target_setpoint = 0; // Mantener balance estático en su lugar (-150 = -1.50 grados)
+		target_setpoint = -1700; // Mantener balance estático en su lugar (-1700 = -17.00 grados)
 		// Integración de yaw continua usando gz calibrado
 		{
 			int32_t gz_calibrated = gz - gz_offset;
@@ -2086,7 +2086,7 @@ void PID_ControlTask(void) {
 
 	// --- CONTROL DE PREVENCIÓN DE CAÍDA TRASERA (Lógica del Gatillo) ---
 	static uint8_t backwards_recovery_active = 0;
-	if (robotMode == STATE_SWING || robotMode == STATE_LINE_FOLLOWING || robotMode == STATE_DODGE) {
+	if (robotMode == STATE_SWING || robotMode == STATE_LINE_FOLLOWING) {
 		if (current_angle > 0) { // Si la inclinación trasera supera 0.00° (0)
 			backwards_recovery_active = 1;
 		} else if (current_angle <= 0) {
@@ -2158,6 +2158,7 @@ void PID_ControlTask(void) {
 	last_error = error;
 	last_angle = current_angle;
 
+
 	// =========================================================
 	// --- 5. MEZCLA DE MOTORES (Potencia de salida) ---
 	// =========================================================
@@ -2168,31 +2169,25 @@ void PID_ControlTask(void) {
 	uint16_t active_minPWM_Right = minPWM_Right;
 
 	if (robotMode == STATE_DODGE) {
-		if (dodge_direction == 1) {
+		if (dodge_direction == 1) { //rotacion hacia la derecha
 			//active_minPWM_Left = 800;
 			//active_minPWM_Right = 1025;
-			active_minPWM_Left = 0;
-			active_minPWM_Right = 2025;
+			active_minPWM_Left = 350;
+			active_minPWM_Right = 1200;
 		} else {
-			active_minPWM_Left = 1800;
-			active_minPWM_Right = 0;
+			active_minPWM_Left = 1200;
+			active_minPWM_Right = 650;
 			//active_minPWM_Left = 1000;
 			//active_minPWM_Right = 1225;
 		}
 	}
 
+
 	if (robotMode == STATE_DODGE && dodgeState == DODGE_ROTATING) {
-		// Modo rotación de DODGE con balanceo prioritario y compensación de fricción
-		if (output > 0) {
-			pwm_left = output + active_minPWM_Left + offset_left + turn_offset;
-			pwm_right = output + active_minPWM_Right + offset_right - turn_offset;
-		} else if (output < 0) {
-			pwm_left = output - active_minPWM_Left - offset_left + turn_offset;
-			pwm_right = output - active_minPWM_Right - offset_right - turn_offset;
-		} else {
-			pwm_left = ((int32_t)active_minPWM_Left * dodge_direction) + offset_left + turn_offset;
-			pwm_right = (-(int32_t)active_minPWM_Right * dodge_direction) - offset_right - turn_offset;
-		}
+		// Modo rotación de DODGE con balanceo prioritario y compensación de fricción (ambos motores adelante)
+		int32_t abs_turn_offset = (turn_offset < 0) ? -turn_offset : turn_offset;
+		pwm_left = output + (int32_t)active_minPWM_Left + offset_left + abs_turn_offset;
+		pwm_right = output + (int32_t)active_minPWM_Right + offset_right + abs_turn_offset;
 	} else {
 		uint8_t is_rotating = (lineState == LINE_LOST || lineState == LINE_SEARCHING);
 
