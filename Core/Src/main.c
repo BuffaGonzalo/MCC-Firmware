@@ -147,6 +147,7 @@ typedef enum {
 // =========================================================
 #define SCALE_LINE          1000     // Factor de escala para el término cuadrático de error de línea
 #define IR_WHITE            500      // Umbral analógico para considerar superficie blanca
+#define IR6_BOX_THRESHOLD   2000     // Umbral analógico para detección de caja (IR6)
 #define LINE_LOST_PHASE0    35       // Duración de la primera fase de búsqueda en ciclos
 #define LINE_LOST_PHASE1    70       // Duración de la segunda fase de búsqueda en ciclos
 
@@ -421,12 +422,13 @@ uint16_t obs_align_dist = 2500;                       // Distancia objetivo del 
 // //DODGE ROTATION
 // =========================================================
 typedef enum {
-    DODGE_INIT,
-    DODGE_ROTATING,
-    DODGE_PAUSE
+    DODGE_LINE_FOLLOWING,  // Seguimiento de línea normal, monitoreando IR6
+    DODGE_ROTATING,        // Rotación sobre su propio eje usando gz e inclinación -1700
+    DODGE_STOPPED,         // Parado en el lugar (balanceándose en setpoint estático)
+    DODGE_LINE_SEARCHING   // Preparado para buscar la línea (para futura implementación)
 } _eDodgeSubState;
 
-volatile _eDodgeSubState dodgeState = DODGE_INIT;
+volatile _eDodgeSubState dodgeState = DODGE_LINE_FOLLOWING;
 volatile int32_t dodge_yaw = 0;
 volatile uint32_t dodge_timer = 0;
 volatile int16_t gz_offset = 0;
@@ -492,6 +494,7 @@ void httpTask(void);
 void OnESP01ChangeState(_eESP01STATUS state);
 //PID
 void PID_ControlTask(void);
+void LineFollowingMEF(int32_t left_ir, int32_t center_ir, int32_t right_ir, int32_t *target_setpoint);
 void Speed_IntegrationTask(uint32_t dt_us);
 static void WiFi_ScanTick(void);
 static void UART_EnforceReceiverActive(void);
@@ -1740,6 +1743,7 @@ void buttonTask(_sButton *button) {
 				break;
 			case 3:
 				robotMode = STATE_DODGE;
+				dodgeState = DODGE_LINE_FOLLOWING;
 				hbIndex = 2; // LED Dodge (3 parpadeos)
 
 				// Restaurar ganancias de seguimiento de línea si venían de estar en 0 (Swing)
@@ -1808,16 +1812,158 @@ void buttonTask(_sButton *button) {
 	}
 }
 
+void LineFollowingMEF(int32_t left_ir, int32_t center_ir, int32_t right_ir, int32_t *target_setpoint) {
+	static uint16_t line_lost_debounce_count = 0;
+	static int32_t last_turn_offset = 0;
+	static int32_t line_lost_yaw = 0;
+	static int8_t search_direction = 1;
+
+	uint8_t ir1_active = (left_ir < IR_WHITE);
+	uint8_t ir3_active = (center_ir < IR_WHITE);
+	uint8_t ir5_active = (right_ir < IR_WHITE);
+	uint8_t active_count = ir1_active + ir3_active + ir5_active;
+
+	switch (lineState) {
+	case LINE_SEARCHING:
+		if (ir3_active) {
+			lineState = LINE_FOLLOWING;
+		} else {
+			turn_offset = -custom_turn;
+		}
+		break;
+
+	case LINE_FOLLOWING:
+		if (active_count == 3 && ir1_active && ir3_active && ir5_active) {
+			lineState = LINE_CROSS;
+			break;
+		}
+
+		if (active_count == 0) {
+			line_lost_debounce_count++;
+			if (line_lost_debounce_count >= 6) {
+				line_lost_debounce_count = 0;
+				line_lost_timer = 0;
+				line_lost_phase = LINE_LOST_ROT_30;
+				line_lost_yaw = 0;
+				search_direction = (last_line_error >= 0) ? -1 : 1;
+				lineState = LINE_LOST;
+				break;
+			}
+			error_linea = last_line_error;
+			turn_offset = last_turn_offset;
+		} else {
+			line_lost_debounce_count = 0;
+
+			error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors) / 10;
+			abs_error = (error_linea > 0) ? error_linea : -error_linea;
+
+			int32_t linear_term = (Kp_line * error_linea);
+			int32_t quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
+
+			turn_offset = linear_term + quad_term;
+			if (turn_offset > turn_limit)        turn_offset = turn_limit;
+			else if (turn_offset < -turn_limit)  turn_offset = -turn_limit;
+
+			last_turn_offset = turn_offset;
+		}
+		last_line_error = error_linea;
+
+		*target_setpoint = attack_setpoint;
+		break;
+
+	case LINE_LOST:
+		if (ir3_active) {
+			lineState = LINE_FOLLOWING;
+			break;
+		}
+
+		// Integración del ángulo de yaw usando el giroscopio Z (gz) y su offset
+		{
+			int32_t gz_cal = gz - gz_offset;
+			line_lost_yaw += ((int64_t)gz_cal * DT_US) / 131000LL;
+		}
+
+		// Configurar setpoint de equilibrio menos inclinado para evitar cabeceo excesivo
+		*target_setpoint = -100;
+
+		switch (line_lost_phase) {
+		case LINE_LOST_ROT_30:
+			// Rotar 30 grados hacia el lado de la línea (en el sentido de search_direction)
+			turn_offset = (search_direction > 0) ? 350 : -350;
+			{
+				int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
+				if (abs_yaw >= 30000) { // 30 grados = 30,000 miligrados
+					line_lost_yaw = 0;
+					line_lost_timer = 0;
+					line_lost_phase = LINE_LOST_WAIT;
+				}
+			}
+			break;
+
+		case LINE_LOST_WAIT:
+			// Detener rotación durante 500 ms (100 ciclos x 5 ms = 500 ms)
+			turn_offset = 0;
+			line_lost_timer++;
+			if (line_lost_timer >= 100) {
+				line_lost_yaw = 0;
+				line_lost_timer = 0;
+				line_lost_phase = LINE_LOST_ROT_60;
+			}
+			break;
+
+		case LINE_LOST_ROT_60:
+			// Rotar 60 grados hacia el otro lado (opuesto a search_direction)
+			turn_offset = (search_direction > 0) ? -350 : 350;
+			{
+				int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
+				if (abs_yaw >= 60000) { // 60 grados = 60,000 miligrados
+					line_lost_yaw = 0;
+					line_lost_timer = 0;
+					line_lost_phase = LINE_LOST_ROT_TOTAL;
+				}
+			}
+			break;
+
+		case LINE_LOST_ROT_TOTAL:
+			// Rotar 360 grados en sentido contrario al caso de 60 grados (es decir, en el sentido de search_direction)
+			turn_offset = (search_direction > 0) ? 350 : -350;
+			{
+				int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
+				if (abs_yaw >= 360000) { // 360 grados = 360,000 miligrados
+					line_lost_yaw = 0;
+					line_lost_timer = 0;
+					line_lost_phase = LINE_LOST_WAIT_FINAL;
+				}
+			}
+			break;
+
+		case LINE_LOST_WAIT_FINAL:
+		default:
+			// Parar motores
+			turn_offset = 0;
+			break;
+		}
+		break;
+
+	case LINE_CROSS:
+		if (active_count < 3) {
+			lineState = LINE_FOLLOWING;
+			break;
+		}
+		break;
+
+	default:
+		lineState = LINE_SEARCHING;
+		break;
+	}
+}
+
 void PID_ControlTask(void) {
 	if (RUN_PID == FALSE)
 		return;
 	RUN_PID = FALSE;
 
 	// Variables estáticas persistentes de estado
-	static uint16_t line_lost_debounce_count = 0;
-	static int32_t last_turn_offset = 0;
-	static int32_t line_lost_yaw = 0;
-	static int8_t search_direction = 1;
 	static int32_t last_angle = 0;
 	static int8_t dodge_direction = 1;
 
@@ -1898,182 +2044,55 @@ void PID_ControlTask(void) {
 
 	case STATE_LINE_FOLLOWING:
 		// --- MODO 2: SEGUIMIENTO DE LÍNEA ---
-		switch (lineState) {
-		case LINE_SEARCHING:
-			if (ir3_active) {
-				lineState = LINE_FOLLOWING;
-			} else {
-				turn_offset = -custom_turn;
-			}
-			break;
-
-		case LINE_FOLLOWING:
-			if (active_count == 3 && ir1_active && ir3_active && ir5_active) {
-				lineState = LINE_CROSS;
-				break;
-			}
-
-			if (active_count == 0) {
-				line_lost_debounce_count++;
-				if (line_lost_debounce_count >= 6) {
-					line_lost_debounce_count = 0;
-					line_lost_timer = 0;
-					line_lost_phase = LINE_LOST_ROT_30;
-					line_lost_yaw = 0;
-					search_direction = (last_line_error >= 0) ? -1 : 1;
-					lineState = LINE_LOST;
-					break;
-				}
-				error_linea = last_line_error;
-				turn_offset = last_turn_offset;
-			} else {
-				line_lost_debounce_count = 0;
-
-				error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors) / 10;
-				abs_error = (error_linea > 0) ? error_linea : -error_linea;
-
-				int32_t linear_term = (Kp_line * error_linea);
-				int32_t quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
-
-				turn_offset = linear_term + quad_term;
-				if (turn_offset > turn_limit)        turn_offset = turn_limit;
-				else if (turn_offset < -turn_limit)  turn_offset = -turn_limit;
-
-				last_turn_offset = turn_offset;
-			}
-			last_line_error = error_linea;
-
-			target_setpoint = attack_setpoint;
-			break;
-
-		case LINE_LOST:
-			if (ir3_active) {
-				lineState = LINE_FOLLOWING;
-				break;
-			}
-
-			// Integración del ángulo de yaw usando el giroscopio Z (gz) y su offset
-			{
-				int32_t gz_cal = gz - gz_offset;
-				line_lost_yaw += ((int64_t)gz_cal * DT_US) / 131000LL;
-			}
-
-			// Configurar setpoint de equilibrio menos inclinado para evitar cabeceo excesivo
-			target_setpoint = -100;
-
-			switch (line_lost_phase) {
-			case LINE_LOST_ROT_30:
-				// Rotar 30 grados hacia el lado de la línea (en el sentido de search_direction)
-				turn_offset = (search_direction > 0) ? 350 : -350;
-				{
-					int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
-					if (abs_yaw >= 30000) { // 30 grados = 30,000 miligrados
-						line_lost_yaw = 0;
-						line_lost_timer = 0;
-						line_lost_phase = LINE_LOST_WAIT;
-					}
-				}
-				break;
-
-			case LINE_LOST_WAIT:
-				// Detener rotación durante 500 ms (100 ciclos x 5 ms = 500 ms)
-				turn_offset = 0;
-				line_lost_timer++;
-				if (line_lost_timer >= 100) {
-					line_lost_yaw = 0;
-					line_lost_timer = 0;
-					line_lost_phase = LINE_LOST_ROT_60;
-				}
-				break;
-
-			case LINE_LOST_ROT_60:
-				// Rotar 60 grados hacia el otro lado (opuesto a search_direction)
-				turn_offset = (search_direction > 0) ? -350 : 350;
-				{
-					int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
-					if (abs_yaw >= 60000) { // 60 grados = 60,000 miligrados
-						line_lost_yaw = 0;
-						line_lost_timer = 0;
-						line_lost_phase = LINE_LOST_ROT_TOTAL;
-					}
-				}
-				break;
-
-			case LINE_LOST_ROT_TOTAL:
-				// Rotar 360 grados en sentido contrario al caso de 60 grados (es decir, en el sentido de search_direction)
-				turn_offset = (search_direction > 0) ? 350 : -350;
-				{
-					int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
-					if (abs_yaw >= 360000) { // 360 grados = 360,000 miligrados
-						line_lost_yaw = 0;
-						line_lost_timer = 0;
-						line_lost_phase = LINE_LOST_WAIT_FINAL;
-					}
-				}
-				break;
-
-			case LINE_LOST_WAIT_FINAL:
-			default:
-				// Parar motores
-				turn_offset = 0;
-				break;
-			}
-			break;
-
-		case LINE_CROSS:
-			if (active_count < 3) {
-				lineState = LINE_FOLLOWING;
-				break;
-			}
-			break;
-
-		default:
-			lineState = LINE_SEARCHING;
-			break;
-		}
+		LineFollowingMEF(left_ir, center_ir, right_ir, &target_setpoint);
 		break;
 
 	case STATE_DODGE:
 		// --- MODO 3: ESQUIVADO DE OBSTÁCULOS (DODGE) ---
-		target_setpoint = -1700; // Mantener balance estático en su lugar (-1700 = -17.00 grados)
-		// Integración de yaw continua usando gz calibrado
-		{
-			int32_t gz_calibrated = gz - gz_offset;
-			dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
-		}
+		if (dodgeState == DODGE_LINE_FOLLOWING) {
+			// Ejecutar el mismo algoritmo de seguimiento de línea que el modo normal
+			LineFollowingMEF(left_ir, center_ir, right_ir, &target_setpoint);
 
-		switch (dodgeState) {
-		case DODGE_INIT:
-			dodge_yaw = 0;
-			dodge_timer = 0;
-			dodgeState = DODGE_ROTATING;
-			break;
+			// Monitorear el sensor frontal IR6 para detectar la caja
+			if (adcDataTx[6] > IR6_BOX_THRESHOLD) {
+				dodge_yaw = 0;
+				target_setpoint = -1700;
+				dodgeState = DODGE_ROTATING;
+			}
+		} else {
+			// Sub-MEF de evasión de obstáculos
+			switch (dodgeState) {
+			case DODGE_ROTATING:
+				{
+					target_setpoint = -1700;
+					// Integración de yaw continua usando gz calibrado
+					int32_t gz_calibrated = gz - gz_offset;
+					dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
 
-		case DODGE_ROTATING:
-			{
-				int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
-				if (abs_yaw >= 90000) { // 90 grados = 90,000 miligrados
-					turn_offset = 0;
-					dodge_timer = 0;
-					dodge_direction = -dodge_direction; // Alternar dirección para la siguiente rotación
-					dodgeState = DODGE_PAUSE;
-				} else {
-					turn_offset = 350 * dodge_direction; // Esfuerzo de giro constante sobre el propio eje alternado
+					int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
+					if (abs_yaw >= 90000) { // Completar rotación de 90 grados
+						turn_offset = 0;
+						dodgeState = DODGE_STOPPED;
+					} else {
+						turn_offset = 350 * dodge_direction; // Rotación sobre propio eje
+					}
 				}
-			}
-			break;
+				break;
 
-		case DODGE_PAUSE:
-			turn_offset = 0;
-			dodge_timer += DT_US;
-			if (dodge_timer >= 4000000) { // 4000ms = 4,000,000us
-				dodgeState = DODGE_INIT;
-			}
-			break;
+			case DODGE_STOPPED:
+				turn_offset = 0;
+				target_setpoint = setpoint; // Parado y balanceándose estáticamente en el lugar
+				break;
 
-		default:
-			dodgeState = DODGE_INIT;
-			break;
+			case DODGE_LINE_SEARCHING:
+				turn_offset = 0;
+				target_setpoint = setpoint;
+				break;
+
+			default:
+				dodgeState = DODGE_LINE_FOLLOWING;
+				break;
+			}
 		}
 		break;
 
@@ -2168,7 +2187,7 @@ void PID_ControlTask(void) {
 	uint16_t active_minPWM_Left = minPWM_Left;
 	uint16_t active_minPWM_Right = minPWM_Right;
 
-	if (robotMode == STATE_DODGE) {
+	if (robotMode == STATE_DODGE && dodgeState == DODGE_ROTATING) {
 		if (dodge_direction == 1) { //rotacion hacia la derecha
 			//active_minPWM_Left = 800;
 			//active_minPWM_Right = 1025;
@@ -2184,10 +2203,9 @@ void PID_ControlTask(void) {
 
 
 	if (robotMode == STATE_DODGE && dodgeState == DODGE_ROTATING) {
-		// Modo rotación de DODGE con balanceo prioritario y compensación de fricción (ambos motores adelante)
-		int32_t abs_turn_offset = (turn_offset < 0) ? -turn_offset : turn_offset;
-		pwm_left = output + (int32_t)active_minPWM_Left + offset_left + abs_turn_offset;
-		pwm_right = output + (int32_t)active_minPWM_Right + offset_right + abs_turn_offset;
+		// Modo rotación de DODGE sobre su propio eje con balanceo prioritario y límites asimétricos del usuario
+		pwm_left = output + ((int32_t)active_minPWM_Left * dodge_direction) + offset_left + turn_offset;
+		pwm_right = output - ((int32_t)active_minPWM_Right * dodge_direction) - offset_right - turn_offset;
 	} else {
 		uint8_t is_rotating = (lineState == LINE_LOST || lineState == LINE_SEARCHING);
 
