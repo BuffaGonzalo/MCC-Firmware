@@ -39,15 +39,15 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, READONLY, DEBUGGING, OCTETS
  17 .debug_macro  0001cc7c  00000000  00000000  000559b5  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 18 .debug_line   0002b619  00000000  00000000  00072631  2**0
+ 18 .debug_line   0002b60e  00000000  00000000  00072631  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 19 .debug_str    00099ff3  00000000  00000000  0009dc4a  2**0
+ 19 .debug_str    00099ff3  00000000  00000000  0009dc3f  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 20 .comment      00000043  00000000  00000000  00137c3d  2**0
+ 20 .comment      00000043  00000000  00000000  00137c32  2**0
                   CONTENTS, READONLY
- 21 .debug_frame  0000498c  00000000  00000000  00137c80  2**2
+ 21 .debug_frame  0000498c  00000000  00000000  00137c78  2**2
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 22 .debug_line_str 00000060  00000000  00000000  0013c60c  2**0
+ 22 .debug_line_str 00000060  00000000  00000000  0013c604  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
 
 Disassembly of section .text:
@@ -8344,115 +8344,112 @@ void PID_ControlTask(void) {
   hadc1.Instance = ADC1;
  8003d9e:	4a6d      	ldr	r2, [pc, #436]	@ (8003f54 <main+0x2ac>)
  8003da0:	4b6d      	ldr	r3, [pc, #436]	@ (8003f58 <main+0x2b0>)
-  ADC_ChannelConfTypeDef sConfig = {0};
- 8003da2:	e9cd 4413 	strd	r4, r4, [sp, #76]	@ 0x4c
+  hadc1.Init.NbrOfConversion = 8;
+ 8003da2:	2508      	movs	r5, #8
   hadc1.Instance = ADC1;
- 8003da6:	6013      	str	r3, [r2, #0]
+ 8003da4:	6013      	str	r3, [r2, #0]
   hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
- 8003da8:	f44f 7380 	mov.w	r3, #256	@ 0x100
-  ADC_ChannelConfTypeDef sConfig = {0};
- 8003dac:	9415      	str	r4, [sp, #84]	@ 0x54
-  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
- 8003dae:	6093      	str	r3, [r2, #8]
-  hadc1.Init.ContinuousConvMode = DISABLE;
- 8003db0:	7314      	strb	r4, [r2, #12]
+ 8003da6:	f44f 7380 	mov.w	r3, #256	@ 0x100
+ 8003daa:	6093      	str	r3, [r2, #8]
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
- 8003db2:	f44f 2360 	mov.w	r3, #917504	@ 0xe0000
-  hadc1.Init.DiscontinuousConvMode = DISABLE;
- 8003db6:	7514      	strb	r4, [r2, #20]
-  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
- 8003db8:	6054      	str	r4, [r2, #4]
-  hadc1.Init.NbrOfConversion = 8;
- 8003dba:	2408      	movs	r4, #8
+ 8003dac:	f44f 2360 	mov.w	r3, #917504	@ 0xe0000
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
- 8003dbc:	4610      	mov	r0, r2
+ 8003db0:	4610      	mov	r0, r2
+  ADC_ChannelConfTypeDef sConfig = {0};
+ 8003db2:	e9cd 4413 	strd	r4, r4, [sp, #76]	@ 0x4c
+ 8003db6:	9415      	str	r4, [sp, #84]	@ 0x54
+  hadc1.Init.ContinuousConvMode = DISABLE;
+ 8003db8:	7314      	strb	r4, [r2, #12]
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+ 8003dba:	7514      	strb	r4, [r2, #20]
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
- 8003dbe:	61d3      	str	r3, [r2, #28]
+ 8003dbc:	61d3      	str	r3, [r2, #28]
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+ 8003dbe:	6054      	str	r4, [r2, #4]
   hadc1.Init.NbrOfConversion = 8;
- 8003dc0:	6114      	str	r4, [r2, #16]
+ 8003dc0:	6115      	str	r5, [r2, #16]
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
  8003dc2:	f001 fbc7 	bl	8005554 <HAL_ADC_Init>
  8003dc6:	b108      	cbz	r0, 8003dcc <main+0x124>
  8003dc8:	b672      	cpsid	i
   while (1)
  8003dca:	e7fe      	b.n	8003dca <main+0x122>
+  sConfig.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
+ 8003dcc:	2406      	movs	r4, #6
   sConfig.Rank = ADC_REGULAR_RANK_1;
- 8003dcc:	e9cd 0713 	strd	r0, r7, [sp, #76]	@ 0x4c
-  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
- 8003dd0:	9015      	str	r0, [sp, #84]	@ 0x54
+ 8003dce:	e9cd 0713 	strd	r0, r7, [sp, #76]	@ 0x4c
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
  8003dd2:	a913      	add	r1, sp, #76	@ 0x4c
  8003dd4:	485f      	ldr	r0, [pc, #380]	@ (8003f54 <main+0x2ac>)
- 8003dd6:	f001 fa51 	bl	800527c <HAL_ADC_ConfigChannel>
- 8003dda:	b108      	cbz	r0, 8003de0 <main+0x138>
- 8003ddc:	b672      	cpsid	i
-  while (1)
- 8003dde:	e7fe      	b.n	8003dde <main+0x136>
+  sConfig.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
+ 8003dd6:	9415      	str	r4, [sp, #84]	@ 0x54
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
- 8003de0:	485c      	ldr	r0, [pc, #368]	@ (8003f54 <main+0x2ac>)
- 8003de2:	a913      	add	r1, sp, #76	@ 0x4c
+ 8003dd8:	f001 fa50 	bl	800527c <HAL_ADC_ConfigChannel>
+ 8003ddc:	b108      	cbz	r0, 8003de2 <main+0x13a>
+ 8003dde:	b672      	cpsid	i
+  while (1)
+ 8003de0:	e7fe      	b.n	8003de0 <main+0x138>
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+ 8003de2:	485c      	ldr	r0, [pc, #368]	@ (8003f54 <main+0x2ac>)
+ 8003de4:	a913      	add	r1, sp, #76	@ 0x4c
   sConfig.Rank = ADC_REGULAR_RANK_2;
- 8003de4:	e9cd 7613 	strd	r7, r6, [sp, #76]	@ 0x4c
+ 8003de6:	e9cd 7613 	strd	r7, r6, [sp, #76]	@ 0x4c
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
- 8003de8:	f001 fa48 	bl	800527c <HAL_ADC_ConfigChannel>
- 8003dec:	b108      	cbz	r0, 8003df2 <main+0x14a>
- 8003dee:	b672      	cpsid	i
+ 8003dea:	f001 fa47 	bl	800527c <HAL_ADC_ConfigChannel>
+ 8003dee:	b108      	cbz	r0, 8003df4 <main+0x14c>
+ 8003df0:	b672      	cpsid	i
   while (1)
- 8003df0:	e7fe      	b.n	8003df0 <main+0x148>
-  sConfig.Rank = ADC_REGULAR_RANK_3;
- 8003df2:	2503      	movs	r5, #3
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
- 8003df4:	4857      	ldr	r0, [pc, #348]	@ (8003f54 <main+0x2ac>)
- 8003df6:	a913      	add	r1, sp, #76	@ 0x4c
+ 8003df2:	e7fe      	b.n	8003df2 <main+0x14a>
   sConfig.Channel = ADC_CHANNEL_2;
- 8003df8:	9613      	str	r6, [sp, #76]	@ 0x4c
+ 8003df4:	9613      	str	r6, [sp, #76]	@ 0x4c
   sConfig.Rank = ADC_REGULAR_RANK_3;
- 8003dfa:	9514      	str	r5, [sp, #80]	@ 0x50
+ 8003df6:	2603      	movs	r6, #3
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
- 8003dfc:	f001 fa3e 	bl	800527c <HAL_ADC_ConfigChannel>
- 8003e00:	b108      	cbz	r0, 8003e06 <main+0x15e>
- 8003e02:	b672      	cpsid	i
+ 8003df8:	4856      	ldr	r0, [pc, #344]	@ (8003f54 <main+0x2ac>)
+ 8003dfa:	a913      	add	r1, sp, #76	@ 0x4c
+  sConfig.Rank = ADC_REGULAR_RANK_3;
+ 8003dfc:	9614      	str	r6, [sp, #80]	@ 0x50
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+ 8003dfe:	f001 fa3d 	bl	800527c <HAL_ADC_ConfigChannel>
+ 8003e02:	b108      	cbz	r0, 8003e08 <main+0x160>
+ 8003e04:	b672      	cpsid	i
   while (1)
- 8003e04:	e7fe      	b.n	8003e04 <main+0x15c>
+ 8003e06:	e7fe      	b.n	8003e06 <main+0x15e>
   sConfig.Channel = ADC_CHANNEL_3;
- 8003e06:	9513      	str	r5, [sp, #76]	@ 0x4c
+ 8003e08:	9613      	str	r6, [sp, #76]	@ 0x4c
   sConfig.Rank = ADC_REGULAR_RANK_4;
- 8003e08:	2504      	movs	r5, #4
+ 8003e0a:	2604      	movs	r6, #4
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
- 8003e0a:	4852      	ldr	r0, [pc, #328]	@ (8003f54 <main+0x2ac>)
- 8003e0c:	a913      	add	r1, sp, #76	@ 0x4c
+ 8003e0c:	4851      	ldr	r0, [pc, #324]	@ (8003f54 <main+0x2ac>)
+ 8003e0e:	a913      	add	r1, sp, #76	@ 0x4c
   sConfig.Rank = ADC_REGULAR_RANK_4;
- 8003e0e:	9514      	str	r5, [sp, #80]	@ 0x50
+ 8003e10:	9614      	str	r6, [sp, #80]	@ 0x50
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
- 8003e10:	f001 fa34 	bl	800527c <HAL_ADC_ConfigChannel>
- 8003e14:	b108      	cbz	r0, 8003e1a <main+0x172>
- 8003e16:	b672      	cpsid	i
+ 8003e12:	f001 fa33 	bl	800527c <HAL_ADC_ConfigChannel>
+ 8003e16:	b108      	cbz	r0, 8003e1c <main+0x174>
+ 8003e18:	b672      	cpsid	i
   while (1)
- 8003e18:	e7fe      	b.n	8003e18 <main+0x170>
+ 8003e1a:	e7fe      	b.n	8003e1a <main+0x172>
   sConfig.Channel = ADC_CHANNEL_4;
- 8003e1a:	9513      	str	r5, [sp, #76]	@ 0x4c
+ 8003e1c:	9613      	str	r6, [sp, #76]	@ 0x4c
   sConfig.Rank = ADC_REGULAR_RANK_5;
- 8003e1c:	2505      	movs	r5, #5
+ 8003e1e:	2605      	movs	r6, #5
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
- 8003e1e:	484d      	ldr	r0, [pc, #308]	@ (8003f54 <main+0x2ac>)
- 8003e20:	a913      	add	r1, sp, #76	@ 0x4c
+ 8003e20:	484c      	ldr	r0, [pc, #304]	@ (8003f54 <main+0x2ac>)
+ 8003e22:	a913      	add	r1, sp, #76	@ 0x4c
   sConfig.Rank = ADC_REGULAR_RANK_5;
- 8003e22:	9514      	str	r5, [sp, #80]	@ 0x50
+ 8003e24:	9614      	str	r6, [sp, #80]	@ 0x50
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
- 8003e24:	f001 fa2a 	bl	800527c <HAL_ADC_ConfigChannel>
- 8003e28:	b108      	cbz	r0, 8003e2e <main+0x186>
- 8003e2a:	b672      	cpsid	i
+ 8003e26:	f001 fa29 	bl	800527c <HAL_ADC_ConfigChannel>
+ 8003e2a:	b108      	cbz	r0, 8003e30 <main+0x188>
+ 8003e2c:	b672      	cpsid	i
   while (1)
- 8003e2c:	e7fe      	b.n	8003e2c <main+0x184>
-  sConfig.Channel = ADC_CHANNEL_5;
- 8003e2e:	9513      	str	r5, [sp, #76]	@ 0x4c
-  sConfig.Rank = ADC_REGULAR_RANK_6;
- 8003e30:	2506      	movs	r5, #6
+ 8003e2e:	e7fe      	b.n	8003e2e <main+0x186>
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
- 8003e32:	4848      	ldr	r0, [pc, #288]	@ (8003f54 <main+0x2ac>)
- 8003e34:	a913      	add	r1, sp, #76	@ 0x4c
+ 8003e30:	4848      	ldr	r0, [pc, #288]	@ (8003f54 <main+0x2ac>)
+ 8003e32:	a913      	add	r1, sp, #76	@ 0x4c
   sConfig.Rank = ADC_REGULAR_RANK_6;
- 8003e36:	9514      	str	r5, [sp, #80]	@ 0x50
+ 8003e34:	e9cd 6413 	strd	r6, r4, [sp, #76]	@ 0x4c
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
  8003e38:	f001 fa20 	bl	800527c <HAL_ADC_ConfigChannel>
  8003e3c:	b108      	cbz	r0, 8003e42 <main+0x19a>
@@ -8460,14 +8457,14 @@ void PID_ControlTask(void) {
   while (1)
  8003e40:	e7fe      	b.n	8003e40 <main+0x198>
   sConfig.Channel = ADC_CHANNEL_6;
- 8003e42:	9513      	str	r5, [sp, #76]	@ 0x4c
+ 8003e42:	9413      	str	r4, [sp, #76]	@ 0x4c
   sConfig.Rank = ADC_REGULAR_RANK_7;
- 8003e44:	2507      	movs	r5, #7
+ 8003e44:	2407      	movs	r4, #7
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
  8003e46:	4843      	ldr	r0, [pc, #268]	@ (8003f54 <main+0x2ac>)
  8003e48:	a913      	add	r1, sp, #76	@ 0x4c
   sConfig.Rank = ADC_REGULAR_RANK_7;
- 8003e4a:	9514      	str	r5, [sp, #80]	@ 0x50
+ 8003e4a:	9414      	str	r4, [sp, #80]	@ 0x50
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
  8003e4c:	f001 fa16 	bl	800527c <HAL_ADC_ConfigChannel>
  8003e50:	b108      	cbz	r0, 8003e56 <main+0x1ae>
@@ -8478,7 +8475,7 @@ void PID_ControlTask(void) {
  8003e56:	483f      	ldr	r0, [pc, #252]	@ (8003f54 <main+0x2ac>)
  8003e58:	a913      	add	r1, sp, #76	@ 0x4c
   sConfig.Rank = ADC_REGULAR_RANK_8;
- 8003e5a:	e9cd 5413 	strd	r5, r4, [sp, #76]	@ 0x4c
+ 8003e5a:	e9cd 4513 	strd	r4, r5, [sp, #76]	@ 0x4c
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
  8003e5e:	f001 fa0d 	bl	800527c <HAL_ADC_ConfigChannel>
  8003e62:	4604      	mov	r4, r0
