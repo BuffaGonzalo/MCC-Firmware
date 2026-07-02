@@ -333,13 +333,28 @@ const uint16_t LUT_IR5_DER[LUT_SIZE] = {102, 237, 375, 518, 705, 1092, 1255, 149
 const uint16_t LUT_PROMEDIO[LUT_SIZE] = {109, 234, 383, 508, 697, 1025, 1187, 1371, 1744, 2234, 2539, 2756, 3295, 3390, 3561, 3826}; // LUT de calibración promedio
 const uint16_t LUT_Y_SCALE[16] = {0, 67, 133, 200, 267, 333, 400, 467, 533, 600, 667, 733, 800, 867, 933, 1000}; // Escala normalizada de salida (0 = Blanco, 1000 = Negro)
 
+// LUTs para sensores superiores (esquivar objeto)
+const uint16_t LUT_IR0[LUT_SIZE] = { 514, 546, 553, 569, 576, 578, 583, 590, 594, 608, 618, 659, 1589, 2721, 3890, 3968 };
+const uint16_t LUT_IR2[LUT_SIZE] = { 1283, 1648, 1679, 1687, 1692, 1705, 1712,1718, 1721, 1725, 1732, 1740, 1749, 1754, 1762, 3968 };
+const uint16_t LUT_IR4[LUT_SIZE] = { 2120, 2134, 2139, 2144, 2148, 2152, 2155, 2158, 2162, 2165, 2169, 2182, 2229, 2255, 2266, 3973 };
+const uint16_t LUT_IR6[LUT_SIZE] = { 2166, 2183, 2187, 2193, 2196, 2200, 2203, 2209, 2215, 2237, 2253, 2264, 2276, 2442, 2600, 3984 };
+const uint16_t LUT_IR7[LUT_SIZE] = { 1068, 1093, 1101, 1107, 1111, 1117, 1123, 1133, 1142, 1151, 1159, 1187, 1291, 1433, 1610, 3940 };
+
 volatile int16_t cal_left_ir = 0;                     // Lectura calibrada del sensor IR izquierdo (Der-Raw en telemetría)
 volatile int16_t cal_center_ir = 0;                   // Lectura calibrada del sensor IR central (Cen-Raw en telemetría)
 volatile int16_t cal_right_ir = 0;                    // Lectura calibrada del sensor IR derecho (Izq-Raw en telemetría)
 
+// Lecturas calibradas de sensores superiores (esquivar objeto)
+volatile int16_t cal_ir0 = 0;
+volatile int16_t cal_ir2 = 0;
+volatile int16_t cal_ir4 = 0;
+volatile int16_t cal_ir6 = 0;
+volatile int16_t cal_ir7 = 0;
+
 // Prototipos de funciones de calibración asociadas
 static uint16_t LUT_Interpolate(const uint16_t *x, const uint16_t *lut_y, uint16_t raw);
 void NormalizeLineSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm);
+void NormalizeDistanceSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm);
 
 // =========================================================
 // //PID
@@ -1999,6 +2014,15 @@ void PID_ControlTask(void) {
 	if (sum_sensors == 0)
 		sum_sensors = 1;
 
+	// Normalización e interpolación directa por LUT de sensores de distancia superiores (esquivar objeto)
+	uint16_t norm_dist_sensors[5];
+	NormalizeDistanceSensors(adcDataTx, norm_dist_sensors);
+	cal_ir0 = (int16_t)norm_dist_sensors[0];
+	cal_ir2 = (int16_t)norm_dist_sensors[1];
+	cal_ir4 = (int16_t)norm_dist_sensors[2];
+	cal_ir6 = (int16_t)norm_dist_sensors[3];
+	cal_ir7 = (int16_t)norm_dist_sensors[4];
+
 	// =========================================================
 	// --- 2. FILTROS Y CÁLCULO DE ÁNGULO (IMU) ---
 	// =========================================================
@@ -2348,6 +2372,15 @@ void NormalizeLineSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm)
     norm[1] = LUT_Interpolate(lut_l2_x, lut_l2_y, adcDataTx_ptr[1]);
     norm[2] = LUT_Interpolate(lut_l3_x, lut_l3_y, adcDataTx_ptr[2]);
     norm[3] = LUT_Interpolate(lut_l4_x, lut_l4_y, adcDataTx_ptr[3]);
+}
+
+void NormalizeDistanceSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm)
+{
+    norm[0] = LUT_Interpolate(LUT_IR0, LUT_Y_SCALE, adcDataTx_ptr[0]);
+    norm[1] = LUT_Interpolate(LUT_IR2, LUT_Y_SCALE, adcDataTx_ptr[2]);
+    norm[2] = LUT_Interpolate(LUT_IR4, LUT_Y_SCALE, adcDataTx_ptr[4]);
+    norm[3] = LUT_Interpolate(LUT_IR6, LUT_Y_SCALE, adcDataTx_ptr[6]);
+    norm[4] = LUT_Interpolate(LUT_IR7, LUT_Y_SCALE, adcDataTx_ptr[7]);
 }
 
 void HandleModeScreenTransition(void) {
