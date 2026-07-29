@@ -333,12 +333,7 @@ const uint16_t LUT_IR5_DER[LUT_SIZE] = {102, 237, 375, 518, 705, 1092, 1255, 149
 const uint16_t LUT_PROMEDIO[LUT_SIZE] = {109, 234, 383, 508, 697, 1025, 1187, 1371, 1744, 2234, 2539, 2756, 3295, 3390, 3561, 3826}; // LUT de calibración promedio
 const uint16_t LUT_Y_SCALE[16] = {0, 67, 133, 200, 267, 333, 400, 467, 533, 600, 667, 733, 800, 867, 933, 1000}; // Escala normalizada de salida (0 = Blanco, 1000 = Negro)
 
-// LUTs para sensores superiores (esquivar objeto)
-const uint16_t LUT_IR0[LUT_SIZE] = { 514, 546, 553, 569, 576, 578, 583, 590, 594, 608, 618, 659, 1589, 2721, 3890, 3968 };
-const uint16_t LUT_IR2[LUT_SIZE] = { 1283, 1648, 1679, 1687, 1692, 1705, 1712,1718, 1721, 1725, 1732, 1740, 1749, 1754, 1762, 3968 };
-const uint16_t LUT_IR4[LUT_SIZE] = { 2120, 2134, 2139, 2144, 2148, 2152, 2155, 2158, 2162, 2165, 2169, 2182, 2229, 2255, 2266, 3973 };
-const uint16_t LUT_IR6[LUT_SIZE] = { 2166, 2183, 2187, 2193, 2196, 2200, 2203, 2209, 2215, 2237, 2253, 2264, 2276, 2442, 2600, 3984 };
-const uint16_t LUT_IR7[LUT_SIZE] = { 1068, 1093, 1101, 1107, 1111, 1117, 1123, 1133, 1142, 1151, 1159, 1187, 1291, 1433, 1610, 3940 };
+// (LUTs para sensores superiores eliminadas para usar valores crudos directamente)
 
 volatile int16_t cal_left_ir = 0;                     // Lectura calibrada del sensor IR izquierdo (Der-Raw en telemetría)
 volatile int16_t cal_center_ir = 0;                   // Lectura calibrada del sensor IR central (Cen-Raw en telemetría)
@@ -354,7 +349,6 @@ volatile int16_t cal_ir7 = 0;
 // Prototipos de funciones de calibración asociadas
 static uint16_t LUT_Interpolate(const uint16_t *x, const uint16_t *lut_y, uint16_t raw);
 void NormalizeLineSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm);
-void NormalizeDistanceSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm);
 
 // =========================================================
 // //PID
@@ -438,7 +432,10 @@ uint16_t obs_align_dist = 2500;                       // Distancia objetivo del 
 // =========================================================
 typedef enum {
     DODGE_LINE_FOLLOWING,  // Seguimiento de línea normal, monitoreando IR6
+    DODGE_WAITING,         // Espera de 500ms parado en el lugar
     DODGE_ROTATING,        // Rotación sobre su propio eje usando gz e inclinación -1700
+    DODGE_WALL_FOLLOWING,  // Avanzar siguiendo proporcionalmente la pared lateral
+    DODGE_ROTATING_BACK,   // Girar 90 grados de vuelta en sentido contrario
     DODGE_STOPPED,         // Parado en el lugar (balanceándose en setpoint estático)
     DODGE_LINE_SEARCHING   // Preparado para buscar la línea (para futura implementación)
 } _eDodgeSubState;
@@ -2014,14 +2011,12 @@ void PID_ControlTask(void) {
 	if (sum_sensors == 0)
 		sum_sensors = 1;
 
-	// Normalización e interpolación directa por LUT de sensores de distancia superiores (esquivar objeto)
-	uint16_t norm_dist_sensors[5];
-	NormalizeDistanceSensors(adcDataTx, norm_dist_sensors);
-	cal_ir0 = (int16_t)norm_dist_sensors[0];
-	cal_ir2 = (int16_t)norm_dist_sensors[1];
-	cal_ir4 = (int16_t)norm_dist_sensors[2];
-	cal_ir6 = (int16_t)norm_dist_sensors[3];
-	cal_ir7 = (int16_t)norm_dist_sensors[4];
+	// Lectura directa de sensores de distancia superiores (esquivar objeto) sin normalización
+	cal_ir0 = (int16_t)adcDataTx[0];
+	cal_ir2 = (int16_t)adcDataTx[2];
+	cal_ir4 = (int16_t)adcDataTx[4];
+	cal_ir6 = (int16_t)adcDataTx[6];
+	cal_ir7 = (int16_t)adcDataTx[7];
 
 	// =========================================================
 	// --- 2. FILTROS Y CÁLCULO DE ÁNGULO (IMU) ---
@@ -2077,18 +2072,36 @@ void PID_ControlTask(void) {
 			// Ejecutar el mismo algoritmo de seguimiento de línea que el modo normal
 			LineFollowingMEF(left_ir, center_ir, right_ir, &target_setpoint);
 
-			// Monitorear el sensor frontal IR6 para detectar la caja
-			if (adcDataTx[6] > IR6_BOX_THRESHOLD) {
-				dodge_yaw = 0;
-				target_setpoint = -1700;
-				dodgeState = DODGE_ROTATING;
+			// Monitorear el sensor frontal IR6 para detectar la caja (umbral de 450)
+			if (cal_ir6 > 450) {
+				dodge_timer = 0;
+				dodgeState = DODGE_WAITING;
 			}
 		} else {
 			// Sub-MEF de evasión de obstáculos
 			switch (dodgeState) {
+			case DODGE_WAITING:
+				turn_offset = 0;
+				dodge_timer += DT_MS;       // DT_MS es 5 ms
+
+				if (dodge_timer < 250) {
+					// Fase 1: Frenado activo (contracabeceo hacia atrás para frenar en seco)
+					target_setpoint = 1500;
+				} else {
+					// Fase 2: Equilibrio estático erguido en el lugar
+					target_setpoint = setpoint;
+				}
+
+				if (dodge_timer >= 2000) {  // 2 segundos totalmente parado antes de rotar
+					dodge_yaw = 0;
+					target_setpoint = -1000;
+					dodgeState = DODGE_ROTATING;
+				}
+				break;
+
 			case DODGE_ROTATING:
 				{
-					target_setpoint = -1700;
+					target_setpoint = -1000;
 					// Integración de yaw continua usando gz calibrado
 					int32_t gz_calibrated = gz - gz_offset;
 					dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
@@ -2096,9 +2109,71 @@ void PID_ControlTask(void) {
 					int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
 					if (abs_yaw >= 90000) { // Completar rotación de 90 grados
 						turn_offset = 0;
-						dodgeState = DODGE_STOPPED;
+						dodge_yaw = 0;
+						dodge_timer = 0;
+						dodgeState = DODGE_WALL_FOLLOWING;
 					} else {
-						turn_offset = 350 * dodge_direction; // Rotación sobre propio eje
+						turn_offset = 250 * dodge_direction; // Rotación sobre propio eje
+					}
+				}
+				break;
+
+			case DODGE_WALL_FOLLOWING:
+{
+    // 1. Aseguramos el avance recto inyectando el setpoint de inclinación
+    target_setpoint = attack_setpoint;
+
+    // 2. Leemos el sensor correspondiente según la dirección de esquive
+    int16_t side_sensor = (dodge_direction == 1) ? cal_ir2 : cal_ir7;
+
+    // 3. Calculamos el error (Buscamos mantener 500 puntos de distancia a la caja)
+    int32_t wall_error = (int32_t)side_sensor - 500;
+
+    // 4. Control proporcional suavizado
+    // En lugar de multiplicar por 2, dividimos por 2 (equivalente a un Kp de 0.5).
+    // Esto hace que la corrección de ruta hacia la pared sea mucho más fluida.
+    turn_offset = (-dodge_direction * wall_error) / 2;
+
+    // 5. LÍMITE ESTRICTO DE DIRECCIÓN (Vital para no perder avance frontal)
+    // Restringimos el esfuerzo del volante a un máximo bajo (ej. 250). 
+    // Así aseguramos que la fuerza del attack_setpoint empuje más que la rotación.
+    int16_t wall_turn_limit = 250;
+    if (turn_offset > wall_turn_limit) {
+        turn_offset = wall_turn_limit;
+    } else if (turn_offset < -wall_turn_limit) {
+        turn_offset = -wall_turn_limit;
+    }
+
+    // Acumulamos el tiempo transcurrido en milisegundos
+    dodge_timer += DT_MS;
+
+    // 6. Detección de salida (Llegada a la esquina de la caja)
+    // Subimos el tiempo de guarda a 800 ms para permitir que el robot 
+    // estabilice su marcha y encuentre la pared antes de intentar buscar el final.
+    if (dodge_timer >= 800 && side_sensor < 150) {
+        turn_offset = 0;
+        dodge_yaw = 0;
+        dodge_timer = 0;
+        dodgeState = DODGE_STOPPED; // Parar por completo y no hacer nada al terminar la caja
+    }
+}
+break;
+
+			case DODGE_ROTATING_BACK:
+				{
+					target_setpoint = -1000;
+					// Integración de yaw continua usando gz calibrado
+					int32_t gz_calibrated = gz - gz_offset;
+					dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
+
+					int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
+					if (abs_yaw >= 90000) { // Completar rotación de 90 grados de vuelta
+						turn_offset = 0;
+						dodge_timer = 0;
+						dodgeState = DODGE_LINE_SEARCHING;
+					} else {
+						// Rotar en sentido contrario (multiplicar por -dodge_direction)
+						turn_offset = 250 * (-dodge_direction);
 					}
 				}
 				break;
@@ -2109,8 +2184,20 @@ void PID_ControlTask(void) {
 				break;
 
 			case DODGE_LINE_SEARCHING:
-				turn_offset = 0;
-				target_setpoint = setpoint;
+				{
+					// Avanzar inclinado al setpoint de ataque
+					target_setpoint = attack_setpoint;
+
+					// Girar suavemente hacia la línea (dirección opuesta al dodge original)
+					turn_offset = -200 * dodge_direction;
+
+					// Si detecta la línea con cualquiera de los sensores de línea, volver al modo normal
+					if (left_ir < IR_WHITE || center_ir < IR_WHITE || right_ir < IR_WHITE) {
+						turn_offset = 0;
+						lineState = LINE_FOLLOWING;
+						dodgeState = DODGE_LINE_FOLLOWING;
+					}
+				}
 				break;
 
 			default:
@@ -2210,26 +2297,24 @@ void PID_ControlTask(void) {
 
 	uint16_t active_minPWM_Left = minPWM_Left;
 	uint16_t active_minPWM_Right = minPWM_Right;
+	int8_t eff_direction = dodge_direction;
 
-	if (robotMode == STATE_DODGE && dodgeState == DODGE_ROTATING) {
-		if (dodge_direction == 1) { //rotacion hacia la derecha
-			//active_minPWM_Left = 800;
-			//active_minPWM_Right = 1025;
+	if (robotMode == STATE_DODGE && (dodgeState == DODGE_ROTATING || dodgeState == DODGE_ROTATING_BACK)) {
+		eff_direction = (dodgeState == DODGE_ROTATING) ? dodge_direction : -dodge_direction;
+		if (eff_direction == 1) { //rotacion hacia la derecha
 			active_minPWM_Left = 350;
 			active_minPWM_Right = 1200;
 		} else {
 			active_minPWM_Left = 1200;
 			active_minPWM_Right = 650;
-			//active_minPWM_Left = 1000;
-			//active_minPWM_Right = 1225;
 		}
 	}
 
 
-	if (robotMode == STATE_DODGE && dodgeState == DODGE_ROTATING) {
+	if (robotMode == STATE_DODGE && (dodgeState == DODGE_ROTATING || dodgeState == DODGE_ROTATING_BACK)) {
 		// Modo rotación de DODGE sobre su propio eje con balanceo prioritario y límites asimétricos del usuario
-		pwm_left = output + ((int32_t)active_minPWM_Left * dodge_direction) + offset_left + turn_offset;
-		pwm_right = output - ((int32_t)active_minPWM_Right * dodge_direction) - offset_right - turn_offset;
+		pwm_left = output + ((int32_t)active_minPWM_Left * eff_direction) + offset_left + turn_offset;
+		pwm_right = output - ((int32_t)active_minPWM_Right * eff_direction) - offset_right - turn_offset;
 	} else {
 		uint8_t is_rotating = (lineState == LINE_LOST || lineState == LINE_SEARCHING);
 
@@ -2374,14 +2459,7 @@ void NormalizeLineSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm)
     norm[3] = LUT_Interpolate(lut_l4_x, lut_l4_y, adcDataTx_ptr[3]);
 }
 
-void NormalizeDistanceSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm)
-{
-    norm[0] = LUT_Interpolate(LUT_IR0, LUT_Y_SCALE, adcDataTx_ptr[0]);
-    norm[1] = LUT_Interpolate(LUT_IR2, LUT_Y_SCALE, adcDataTx_ptr[2]);
-    norm[2] = LUT_Interpolate(LUT_IR4, LUT_Y_SCALE, adcDataTx_ptr[4]);
-    norm[3] = LUT_Interpolate(LUT_IR6, LUT_Y_SCALE, adcDataTx_ptr[6]);
-    norm[4] = LUT_Interpolate(LUT_IR7, LUT_Y_SCALE, adcDataTx_ptr[7]);
-}
+
 
 void HandleModeScreenTransition(void) {
 	static _eRobotMode lastMode = (_eRobotMode)-1;
