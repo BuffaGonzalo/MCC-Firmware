@@ -314,7 +314,7 @@ static uint8_t udpReadyToStart = 0;                   // Bandera que indica que 
 // =========================================================
 static const _sWiFiNetwork knownNetworks[] = {
 	{ "FCAL-Personal", "fcal-uner+2019",       "172.22.237.227" },
-	{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.10"   },
+	{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.11"   },
 	{ "FCAL",    "fcalconcordia.06-2019",    "172.23.190.89"  },
 	{ "SA04",    "12345678",                "10.93.92.213"   },
 	{ "InternetPlus_872f10_EXT", "wlan78d0ef", "192.168.1.52" },
@@ -2226,6 +2226,18 @@ break;
 		backwards_recovery_active = 0;
 	}
 
+	// --- CONTROL DE PREVENCIÓN DE CAÍDA DELANTERA EN MODO SWING ---
+	static uint8_t forwards_recovery_active = 0;
+	if (robotMode == STATE_SWING) {
+		if (current_angle < -ANG15) { // Si la inclinación delantera en Swing excede -15.00° (-1500)
+			forwards_recovery_active = 1;
+		} else if (current_angle >= -ANG15) {
+			forwards_recovery_active = 0;
+		}
+	} else {
+		forwards_recovery_active = 0;
+	}
+
 	// =========================================================
 	// --- LAZO DE CONTROL EN CASCADA EXTERNO (Cada 40ms) ---
 	// =========================================================
@@ -2354,10 +2366,15 @@ break;
 		}
 	}
 
-	// --- IMPULSO DIRECTO DE RECUPERACIÓN TRASERA (Bypass del Balanceo) ---
+	// --- IMPULSO DIRECTO DE RECUPERACIÓN (Bypass del Balanceo) ---
 	if (backwards_recovery_active) {
 		pwm_left = -3000;  // Impulso directo marcha atrás controlado (30% duty cycle)
 		pwm_right = -3000;
+		integral = 0;      // Resetear integrador para evitar descontrol al volver a balancear
+		last_error = 0;
+	} else if (forwards_recovery_active) {
+		pwm_left = 3000;   // Impulso directo marcha adelante en modo SWING (30% duty cycle)
+		pwm_right = 3000;
 		integral = 0;      // Resetear integrador para evitar descontrol al volver a balancear
 		last_error = 0;
 	}
