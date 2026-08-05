@@ -2072,10 +2072,18 @@ void PID_ControlTask(void) {
 			// Ejecutar el mismo algoritmo de seguimiento de línea que el modo normal
 			LineFollowingMEF(left_ir, center_ir, right_ir, &target_setpoint);
 
-			// Monitorear el sensor frontal IR6 para detectar la caja (umbral de 450)
-			if (cal_ir6 > 450) {
+			// Monitorear el sensor frontal IR6: Frenado progresivo de 100 a 500 hasta llegar a +250
+			uint16_t ir6_start_brake = 100;
+			uint16_t ir6_stop_brake  = 500;
+			int32_t brake_target_setpoint = 250; // Setpoint objetivo positivo al llegar a 500 puntos
+
+			if (cal_ir6 >= ir6_stop_brake) {
 				dodge_timer = 0;
 				dodgeState = DODGE_WAITING;
+			} else if (cal_ir6 > ir6_start_brake) {
+				// Interpolar progresivamente target_setpoint desde el setpoint de ataque (-1600) hasta +250 al llegar a 500 puntos
+				int32_t progress = (int32_t)(cal_ir6 - ir6_start_brake) * 100 / (ir6_stop_brake - ir6_start_brake);
+				target_setpoint = attack_setpoint + ((brake_target_setpoint - attack_setpoint) * progress) / 100;
 			}
 		} else {
 			// Sub-MEF de evasión de obstáculos
@@ -2084,40 +2092,46 @@ void PID_ControlTask(void) {
 				turn_offset = 0;
 				dodge_timer += DT_MS;       // DT_MS es 5 ms
 
-				if (dodge_timer < 250) {
-					// Fase 1: Frenado activo (contracabeceo hacia atrás para frenar en seco)
+				if (dodge_timer < 300) {
+					// Fase 1: Frenado activo por 300ms con setpoint positivo de +1500
 					target_setpoint = 1500;
 				} else {
 					// Fase 2: Equilibrio estático erguido en el lugar
 					target_setpoint = setpoint;
 				}
 
-				if (dodge_timer >= 2000) {  // 2 segundos totalmente parado antes de rotar
+				if (dodge_timer >= 2000) {  // 2000ms (2 segundos) parado después de frenar antes de iniciar la rotación
 					dodge_yaw = 0;
-					target_setpoint = -1000;
+					target_setpoint = setpoint;
 					dodgeState = DODGE_ROTATING;
 				}
 				break;
 
 			case DODGE_ROTATING:
 				{
-					target_setpoint = -1000;
+					target_setpoint = setpoint;
 					// Integración de yaw continua usando gz calibrado
 					int32_t gz_calibrated = gz - gz_offset;
 					dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
 
 					int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
-					if (abs_yaw >= 90000) { // Completar rotación de 90 grados
+					if (abs_yaw >= 90000) { // Completar rotación de 90 grados (90,000 mdeg)
 						turn_offset = 0;
 						dodge_yaw = 0;
 						dodge_timer = 0;
-						dodgeState = DODGE_WALL_FOLLOWING;
+						dodgeState = DODGE_STOPPED; // Quedar parado balanceándose en el lugar tras girar
 					} else {
 						turn_offset = 250 * dodge_direction; // Rotación sobre propio eje
 					}
 				}
 				break;
 
+			case DODGE_STOPPED:
+				turn_offset = 0;
+				target_setpoint = setpoint; // Parado y balanceándose estáticamente en el lugar
+				break;
+
+			/* Bloques posteriores (Seguimiento de pared y retorno a línea) deshabilitados para testear giro de 90°
 			case DODGE_WALL_FOLLOWING:
 {
     // 1. Aseguramos el avance recto inyectando el setpoint de inclinación
@@ -2126,35 +2140,27 @@ void PID_ControlTask(void) {
     // 2. Leemos el sensor correspondiente según la dirección de esquive
     int16_t side_sensor = (dodge_direction == 1) ? cal_ir2 : cal_ir7;
 
-    // 3. Calculamos el error (Buscamos mantener 500 puntos de distancia a la caja)
-    int32_t wall_error = (int32_t)side_sensor - 500;
-
-    // 4. Control proporcional suavizado
-    // En lugar de multiplicar por 2, dividimos por 2 (equivalente a un Kp de 0.5).
-    // Esto hace que la corrección de ruta hacia la pared sea mucho más fluida.
-    turn_offset = (-dodge_direction * wall_error) / 2;
-
-    // 5. LÍMITE ESTRICTO DE DIRECCIÓN (Vital para no perder avance frontal)
-    // Restringimos el esfuerzo del volante a un máximo bajo (ej. 250). 
-    // Así aseguramos que la fuerza del attack_setpoint empuje más que la rotación.
-    int16_t wall_turn_limit = 250;
-    if (turn_offset > wall_turn_limit) {
-        turn_offset = wall_turn_limit;
-    } else if (turn_offset < -wall_turn_limit) {
-        turn_offset = -wall_turn_limit;
+    // 3. Control por Ventana Neutra / Histeresis (Intervalo de 200 puntos alrededor del objetivo 500: [300, 700])
+    // - Si pasa de 700 (demasiado cerca de la pared): girar hacia afuera (alejarse)
+    // - Si baja de 300 (demasiado lejos de la pared): girar hacia adentro (acercarse)
+    // - Si está en la ventana neutra [300, 700]: avanzar recto (turn_offset = 0)
+    if (side_sensor > 700) {
+        turn_offset = -dodge_direction * 200; // Girar hacia afuera de la pared
+    } else if (side_sensor < 300) {
+        turn_offset = dodge_direction * 200;  // Girar hacia la pared
+    } else {
+        turn_offset = 0;                      // Avanzar recto (intervalo aceptable [300, 700])
     }
 
     // Acumulamos el tiempo transcurrido en milisegundos
     dodge_timer += DT_MS;
 
-    // 6. Detección de salida (Llegada a la esquina de la caja)
-    // Subimos el tiempo de guarda a 800 ms para permitir que el robot 
-    // estabilice su marcha y encuentre la pared antes de intentar buscar el final.
+    // 4. Detección de salida (Llegada a la esquina de la caja)
     if (dodge_timer >= 800 && side_sensor < 150) {
         turn_offset = 0;
         dodge_yaw = 0;
         dodge_timer = 0;
-        dodgeState = DODGE_STOPPED; // Parar por completo y no hacer nada al terminar la caja
+        dodgeState = DODGE_STOPPED; // Parar por completo al terminar la pared
     }
 }
 break;
@@ -2178,11 +2184,6 @@ break;
 				}
 				break;
 
-			case DODGE_STOPPED:
-				turn_offset = 0;
-				target_setpoint = setpoint; // Parado y balanceándose estáticamente en el lugar
-				break;
-
 			case DODGE_LINE_SEARCHING:
 				{
 					// Avanzar inclinado al setpoint de ataque
@@ -2199,6 +2200,7 @@ break;
 					}
 				}
 				break;
+			*/
 
 			default:
 				dodgeState = DODGE_LINE_FOLLOWING;
