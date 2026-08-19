@@ -431,21 +431,20 @@ uint16_t obs_align_dist = 2500;                       // Distancia objetivo del 
 // //DODGE ROTATION
 // =========================================================
 typedef enum {
-    DODGE_LINE_FOLLOWING,  // Seguimiento de línea normal, monitoreando IR6
-    DODGE_WAITING,         // Espera de 500ms parado en el lugar
-    AXIS_ROTATION,         // Rotación continua de 90° sobre su propio eje a la derecha
-    DODGE_FIND_WALL,       // Giro a la izquierda buscando la pared hasta alcanzar ~1000 puntos
-    DODGE_ROTATING_PAUSE,  // Pausa (reserva/compatibilidad)
-    DODGE_WALL_FOLLOWING,  // Avanzar siguiendo proporcionalmente la pared lateral
-    DODGE_ROTATING_BACK,   // Girar 90 grados de vuelta en sentido contrario
-    DODGE_STOPPED,         // Parado en el lugar (balanceándose en setpoint estático)
-    DODGE_LINE_SEARCHING   // Preparado para buscar la línea (para futura implementación)
+    DODGE_LINE_FOLLOWING,  // Seguimiento de línea normal monitoreando IR6
+    DODGE_ROTATING_90,     // Rotación continua de 90° a la derecha sobre su propio eje
+    DODGE_WALL_FOLLOWING,  // Avanzar siguiendo proporcionalmente la pared lateral izquierda (cal_ir2)
+    DODGE_STANDBY,         // Modo Standby (frenado 1s al perder la pared)
+    DODGE_CORNER_ROTATING,     // Rotación continua de 45° a la izquierda sobre su propio eje
+    DODGE_LINE_SEARCHING   // Avance hacia adelante buscando reconectarse a la línea
 } _eDodgeSubState;
 
 volatile _eDodgeSubState dodgeState = DODGE_LINE_FOLLOWING;
 volatile int32_t dodge_yaw = 0;
 volatile int32_t dodge_step_target_yaw = 2000; // Micro-paso inicial de 2.0° (2,000 mdeg)
 volatile uint32_t dodge_timer = 0;
+volatile uint8_t dodge_wall_count = 0;
+volatile _eDodgeSubState dodge_standby_next = DODGE_WALL_FOLLOWING;
 volatile int16_t gz_offset = 0;
 
 /* USER CODE END PV */
@@ -2072,111 +2071,140 @@ void PID_ControlTask(void) {
 		break;
 
 	case STATE_DODGE:
-		// --- MODO 3: ESQUIVADO DE OBSTÁCULOS (DODGE) ---
-		/* Lógica original del modo DODGE comentada tal cual:
-		if (dodgeState == DODGE_LINE_FOLLOWING) {
-			// Seguimiento de línea normal mientras monitorea el sensor frontal IR6
+		// --- MODO 3: ESQUIVADO DE OBSTÁCULOS OPTIMIZADO (MEF MINIMALISTA) ---
+		switch (dodgeState) {
+		case DODGE_LINE_FOLLOWING:
+			// 1. Seguimiento de línea normal mientras monitorea el sensor frontal IR6
 			LineFollowingMEF(left_ir, center_ir, right_ir, &target_setpoint);
 
-			// Monitorear el sensor frontal IR6: Si detecta objeto (~500 puntos), rotar sobre su eje
+			// Monitorear sensor frontal IR6: Si detecta objeto (>= 500), entrar a STANDBY previo antes de rotar 90°
 			if (cal_ir6 >= 500) {
 				dodge_yaw = 0;
 				dodge_timer = 0;
-				dodgeState = AXIS_ROTATION;
+				dodge_wall_count = 0;
+				dodge_standby_next = DODGE_ROTATING_90; // Tras el standby de 1s, pasa a rotar 90°
+				dodgeState = DODGE_STANDBY;             // Iniciar standby previo erguido (+350)
 			}
-		} else {
-			switch (dodgeState) {
-			case AXIS_ROTATION: {
-				// Postura perfectamente vertical (El PID tiene control total)
-				target_setpoint = 0;
+			break;
 
-				// Atenuación suave del integral si es necesario
-				integral = (integral * 9) / 10;
+		case DODGE_ROTATING_90: {
+			// 2. Rotación continua de 90° a la derecha sobre su propio eje manteniendo setpoint (+350)
+			target_setpoint = 350;
+			integral = (integral * 9) / 10;
 
-				int32_t gz_calibrated = gz - gz_offset;
-				dodge_yaw += ((int64_t) gz_calibrated * DT_US) / 131000LL;
+			int32_t gz_calibrated = gz - gz_offset;
+			dodge_yaw += ((int64_t) gz_calibrated * DT_US) / 131000LL;
 
-				int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
+			int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
 
-				if (abs_yaw >= 90000) { // Fin de rotación a 90°
-					turn_offset = 0;
-					dodge_yaw = 0;
+			if (abs_yaw >= 90000) { // 90.000° alcanzados
+				turn_offset = 0;
+				dodge_yaw = 0;
+				dodge_timer = 0;
+				dodge_standby_next = DODGE_WALL_FOLLOWING; // Tras el standby de 1s, pasa a seguir Pared 1
+				dodgeState = DODGE_STANDBY; // Intercalar standby de 1s post giro 90°
+			} else {
+				turn_offset = 250 * dodge_direction; // Giro a la derecha
+			}
+		}
+		break;
+
+		case DODGE_WALL_FOLLOWING: {
+			int16_t side_sensor = cal_ir2;
+			dodge_timer += DT_MS; // Temporizador de seguridad/inmunidad de la pared
+
+			// Umbral y tiempo de inmunidad según Pared 1 (dodge_wall_count == 0) o Pared 2 (dodge_wall_count == 1)
+			int16_t wall_end_threshold = (dodge_wall_count == 0) ? 250 : 100;
+			uint16_t immunity_ms = (dodge_wall_count == 0) ? 0 : 2000; // 2s de inmunidad únicamente tras la 1ra rotación de 45°
+
+			if (side_sensor < wall_end_threshold) {
+				// Solo permitir la transición a STANDBY tras transcurrir el tiempo de inmunidad (2s en la 2da pared)
+				if (dodge_timer >= immunity_ms) {
 					dodge_timer = 0;
-					dodgeState = DODGE_FIND_WALL; // Pasar a girar a la izquierda para buscar la pared
-				} else {
-					turn_offset = 250 * dodge_direction; // Giro a la derecha
-				}
-			}
-			break;
-
-			case DODGE_FIND_WALL: {
-				// Postura perfectamente vertical mientras busca la pared
-				target_setpoint = 0;
-				integral = (integral * 9) / 10;
-
-				// Girar hacia la izquierda (hacia la pared)
-				turn_offset = -250 * dodge_direction;
-
-				// Sensor lateral dirigido a la pared (si giró a la derecha, la pared está a la izquierda: cal_ir2)
-				int16_t side_sensor = (dodge_direction == 1) ? cal_ir2 : cal_ir7;
-
-				// Girar hasta que el sensor detecte la pared alcanzando ~1000 puntos
-				if (side_sensor >= 1000) {
+					target_setpoint = 350;
 					turn_offset = 0;
-					dodgeState = DODGE_WALL_FOLLOWING; // Iniciar avance siguiendo pared
+					dodge_standby_next = DODGE_CORNER_ROTATING; // Tras el standby de 1s, pasa al giro de 45°/30°
+					dodgeState = DODGE_STANDBY;
+				} else {
+					// Durante los 2s de inmunidad inicial de la 2da pared, avanzar recto sin disparar STANDBY
+					target_setpoint = attack_setpoint;
+					turn_offset = 0;
 				}
-			}
-			break;
-
-			case DODGE_WALL_FOLLOWING: {
-				// Setpoint de ataque para avanzar inclinado hacia adelante (igual que en seguimiento de línea)
+			} else {
+				// Sensor >= wall_end_threshold: Avanzar inclinado y seguir pared proporcionalmente
 				target_setpoint = attack_setpoint;
 
-				int16_t side_sensor = (dodge_direction == 1) ? cal_ir2 : cal_ir7;
-				int16_t wall_target = 1000; // Setpoint de distancia a la pared
+				int16_t wall_target = 1000;    // Setpoint de distancia deseada a la pared
 				int16_t wall_turn_limit = 250; // Límite de giro suave
 
-				// Control proporcional a la pared respecto a 1000 puntos:
 				int32_t wall_err = side_sensor - wall_target;
-				turn_offset = -(wall_err / 4) * dodge_direction;
+				turn_offset = -(wall_err / 4);
 
-				// Aplicar el límite de giro suave
 				if (turn_offset > wall_turn_limit)
 					turn_offset = wall_turn_limit;
 				else if (turn_offset < -wall_turn_limit)
 					turn_offset = -wall_turn_limit;
-				break;
-			}
-
-			case DODGE_STOPPED:
-				turn_offset = 0;
-				target_setpoint = setpoint; // Quedar quieto balanceándose en el lugar
-				break;
-
-			default:
-				dodgeState = DODGE_LINE_FOLLOWING;
-				break;
 			}
 		}
-		*/
+		break;
 
-		// --- SEGUIMIENTO DE PARED EXCLUSIVO (Sensor Lateral Izquierdo: cal_ir2) ---
-		// 1. Parámetros de avance copiados tal cual del seguidor de línea
-		target_setpoint = attack_setpoint;
+		case DODGE_STANDBY:
+			// 4. Modo STANDBY: Esperar 1 segundo frenado en posición erguida (+350)
+			target_setpoint = 350;
+			turn_offset = 0;
+			dodge_timer += DT_MS;
 
-		// 2. Control proporcional de distancia a la pared
-		{
-			int16_t side_sensor = cal_ir2; // Sensor lateral izquierdo
-			int16_t wall_target = 1000;    // Setpoint de distancia deseada a la pared
-			int16_t wall_turn_limit = 250; // Límite de giro suave
+			if (dodge_timer >= 1000) { // 1000 ms = 1 segundo completado
+				dodge_timer = 0;
+				dodge_yaw = 0;
+				dodgeState = dodge_standby_next; // Pasa al siguiente estado programado (Wall Following o Rotación 45°)
+			}
+			break;
 
-			int32_t wall_err = side_sensor - wall_target;
-			turn_offset = -(wall_err / 4);
+		case DODGE_CORNER_ROTATING: {
+			// 5. Rotación continua sobre su propio eje a la izquierda manteniendo setpoint (+350)
+			target_setpoint = 350;
+			integral = (integral * 9) / 10;
 
-			if (turn_offset > wall_turn_limit)
-				turn_offset = wall_turn_limit;
-			else if (turn_offset < -wall_turn_limit)
-				turn_offset = -wall_turn_limit;
+			int32_t gz_calibrated = gz - gz_offset;
+			dodge_yaw += ((int64_t) gz_calibrated * DT_US) / 131000LL;
+
+			int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
+			int32_t target_yaw = (dodge_wall_count == 0) ? 45000 : 30000; // 45° la 1ra vez, 30° la 2da vez
+
+			if (abs_yaw >= target_yaw) {
+				turn_offset = 0;
+				dodge_yaw = 0;
+				dodge_timer = 0;
+				dodge_wall_count++;
+
+				if (dodge_wall_count < 2) {
+					dodge_standby_next = DODGE_WALL_FOLLOWING; // Intercalar standby antes de la Pared 2
+				} else {
+					dodge_standby_next = DODGE_LINE_SEARCHING; // Intercalar standby antes de búsqueda de línea
+				}
+				dodgeState = DODGE_STANDBY;
+			} else {
+				turn_offset = -250 * dodge_direction; // Giro a la izquierda sobre el eje
+			}
+		}
+		break;
+
+		case DODGE_LINE_SEARCHING:
+			// 6. Avance frontal buscando la línea tras la última rotación (ÚNICA ETAPA DONDE SE BUSCA LÍNEA)
+			target_setpoint = attack_setpoint;
+			turn_offset = 0;
+
+			// Detectar la línea negra tras completar la última rotación
+			if (center_ir >= 500 || left_ir >= 500 || right_ir >= 500) {
+				lineState = LINE_FOLLOWING;
+				dodgeState = DODGE_LINE_FOLLOWING; // Volver a seguimiento de línea normal
+			}
+			break;
+
+		default:
+			dodgeState = DODGE_LINE_FOLLOWING;
+			break;
 		}
 		break;
 
@@ -2282,7 +2310,7 @@ void PID_ControlTask(void) {
 
 		// Detectamos si el robot está en CUALQUIER modo que requiera rotar sobre su eje
 		uint8_t is_rotating_on_axis = ((robotMode == STATE_LINE_FOLLOWING && (lineState == LINE_LOST || lineState == LINE_SEARCHING)) ||
-	                                  (robotMode == STATE_DODGE && (dodgeState == AXIS_ROTATION || dodgeState == DODGE_FIND_WALL || dodgeState == DODGE_ROTATING_BACK)));
+	                                  (robotMode == STATE_DODGE && (dodgeState == DODGE_ROTATING_90 || dodgeState == DODGE_CORNER_ROTATING)));
 
 		if (is_rotating_on_axis) {
 			// --- ROTACIÓN SOBRE PROPIO EJE (Pivot) ---
