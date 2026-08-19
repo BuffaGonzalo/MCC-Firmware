@@ -2113,8 +2113,8 @@ void PID_ControlTask(void) {
 			break;
 
 		case DODGE_ROTATING_90: {
-			// 2. Rotación continua de 90° a la derecha sobre su propio eje manteniendo setpoint (+350)
-			target_setpoint = 350;
+			// 2. Rotación continua de 90° a la derecha sobre su propio eje manteniendo setpoint (-350)
+			target_setpoint = -350;
 			integral = (integral * 9) / 10;
 
 			int32_t gz_calibrated = gz - gz_offset;
