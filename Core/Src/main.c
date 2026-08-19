@@ -432,10 +432,10 @@ uint16_t obs_align_dist = 2500;                       // Distancia objetivo del 
 // =========================================================
 typedef enum {
     DODGE_LINE_FOLLOWING,  // Seguimiento de línea normal monitoreando IR6
+    DODGE_PRE_ROTATE_WAIT, // Espera de 500ms erguido (+350) tras detectar la pared antes de rotar
     DODGE_ROTATING_90,     // Rotación continua de 90° a la derecha sobre su propio eje
     DODGE_WALL_FOLLOWING,  // Avanzar siguiendo proporcionalmente la pared lateral izquierda (cal_ir2)
-    DODGE_STANDBY,         // Modo Standby (frenado 1s al perder la pared)
-    DODGE_CORNER_ROTATING,     // Rotación continua de 45° a la izquierda sobre su propio eje
+    DODGE_CORNER_ROTATING, // Rotación continua de 45° a la izquierda sobre su propio eje
     DODGE_LINE_SEARCHING   // Avance hacia adelante buscando reconectarse a la línea
 } _eDodgeSubState;
 
@@ -444,7 +444,6 @@ volatile int32_t dodge_yaw = 0;
 volatile int32_t dodge_step_target_yaw = 2000; // Micro-paso inicial de 2.0° (2,000 mdeg)
 volatile uint32_t dodge_timer = 0;
 volatile uint8_t dodge_wall_count = 0;
-volatile _eDodgeSubState dodge_standby_next = DODGE_WALL_FOLLOWING;
 volatile int16_t gz_offset = 0;
 
 /* USER CODE END PV */
@@ -2077,13 +2076,39 @@ void PID_ControlTask(void) {
 			// 1. Seguimiento de línea normal mientras monitorea el sensor frontal IR6
 			LineFollowingMEF(left_ir, center_ir, right_ir, &target_setpoint);
 
-			// Monitorear sensor frontal IR6: Si detecta objeto (>= 500), entrar a STANDBY previo antes de rotar 90°
-			if (cal_ir6 >= 500) {
+			// Frenado ultra-agresivo al aproximarse al objeto (cal_ir6 aumenta de 50 a 300)
+			if (cal_ir6 > 50) {
+				int16_t ir_val = (cal_ir6 > 300) ? 300 : cal_ir6;
+				// Rampa lineal acelerada desde attack_setpoint (en IR=50) hasta +800 (en IR=300)
+				int32_t ramp_setpoint = attack_setpoint + ((800 - (int32_t)attack_setpoint) * (ir_val - 50)) / 250;
+				target_setpoint = ramp_setpoint;
+
+				// Reducción drástica del desplazamiento lateral
+				int32_t scale_factor = 300 - ir_val; // de 250 a 0
+				turn_offset = (turn_offset * scale_factor) / 250;
+			}
+
+			// Al alcanzar el umbral de detección frontal (>= 300), fijar setpoint agresivo en +800 y pasar a espera previa
+			if (cal_ir6 >= 300) {
+				target_setpoint = 800;
+				turn_offset = 0;
 				dodge_yaw = 0;
 				dodge_timer = 0;
 				dodge_wall_count = 0;
-				dodge_standby_next = DODGE_ROTATING_90; // Tras el standby de 1s, pasa a rotar 90°
-				dodgeState = DODGE_STANDBY;             // Iniciar standby previo erguido (+350)
+				dodgeState = DODGE_PRE_ROTATE_WAIT; // Transición a espera previa de 500ms
+			}
+			break;
+
+		case DODGE_PRE_ROTATE_WAIT:
+			// Modo de Espera Pre-Giro: Esperar 500 ms frenado con inclinación ultra-agresiva (+800) antes de iniciar la rotación de 90°
+			target_setpoint = 800;
+			turn_offset = 0;
+			dodge_timer += DT_MS;
+
+			if (dodge_timer >= 500) { // 500 ms = 0.5 segundos completados
+				dodge_timer = 0;
+				dodge_yaw = 0;
+				dodgeState = DODGE_ROTATING_90; // Pasar al estado de rotación de 90°
 			}
 			break;
 
@@ -2099,12 +2124,10 @@ void PID_ControlTask(void) {
 
 			if (abs_yaw >= 90000) { // 90.000° alcanzados
 				turn_offset = 0;
-				dodge_yaw = 0;
-				dodge_timer = 0;
-				dodge_standby_next = DODGE_WALL_FOLLOWING; // Tras el standby de 1s, pasa a seguir Pared 1
-				dodgeState = DODGE_STANDBY; // Intercalar standby de 1s post giro 90°
+				// MODIFICACIÓN TEMPORAL DE TESTEO: Se mantiene colgado en DODGE_ROTATING_90 con turn_offset=0 sin cambiar de estado
+				// dodgeState = DODGE_WALL_FOLLOWING;
 			} else {
-				turn_offset = 250 * dodge_direction; // Giro a la derecha
+				turn_offset = -250 * dodge_direction; // Giro a la derecha en el mezclador de velocidades
 			}
 		}
 		break;
@@ -2118,15 +2141,13 @@ void PID_ControlTask(void) {
 			uint16_t immunity_ms = (dodge_wall_count == 0) ? 0 : 2000; // 2s de inmunidad únicamente tras la 1ra rotación de 45°
 
 			if (side_sensor < wall_end_threshold) {
-				// Solo permitir la transición a STANDBY tras transcurrir el tiempo de inmunidad (2s en la 2da pared)
+				// Solo permitir la transición tras transcurrir el tiempo de inmunidad (2s en la 2da pared)
 				if (dodge_timer >= immunity_ms) {
 					dodge_timer = 0;
-					target_setpoint = 350;
-					turn_offset = 0;
-					dodge_standby_next = DODGE_CORNER_ROTATING; // Tras el standby de 1s, pasa al giro de 45°/30°
-					dodgeState = DODGE_STANDBY;
+					dodge_yaw = 0;
+					dodgeState = DODGE_CORNER_ROTATING; // Transición directa al giro de esquina (45° o 30°)
 				} else {
-					// Durante los 2s de inmunidad inicial de la 2da pared, avanzar recto sin disparar STANDBY
+					// Durante los 2s de inmunidad inicial de la 2da pared, avanzar recto sin disparar giro
 					target_setpoint = attack_setpoint;
 					turn_offset = 0;
 				}
@@ -2148,21 +2169,8 @@ void PID_ControlTask(void) {
 		}
 		break;
 
-		case DODGE_STANDBY:
-			// 4. Modo STANDBY: Esperar 1 segundo frenado en posición erguida (+350)
-			target_setpoint = 350;
-			turn_offset = 0;
-			dodge_timer += DT_MS;
-
-			if (dodge_timer >= 1000) { // 1000 ms = 1 segundo completado
-				dodge_timer = 0;
-				dodge_yaw = 0;
-				dodgeState = dodge_standby_next; // Pasa al siguiente estado programado (Wall Following o Rotación 45°)
-			}
-			break;
-
 		case DODGE_CORNER_ROTATING: {
-			// 5. Rotación continua sobre su propio eje a la izquierda manteniendo setpoint (+350)
+			// 4. Rotación continua sobre su propio eje a la izquierda manteniendo setpoint (+350)
 			target_setpoint = 350;
 			integral = (integral * 9) / 10;
 
@@ -2179,11 +2187,10 @@ void PID_ControlTask(void) {
 				dodge_wall_count++;
 
 				if (dodge_wall_count < 2) {
-					dodge_standby_next = DODGE_WALL_FOLLOWING; // Intercalar standby antes de la Pared 2
+					dodgeState = DODGE_WALL_FOLLOWING; // Transición directa a Pared 2
 				} else {
-					dodge_standby_next = DODGE_LINE_SEARCHING; // Intercalar standby antes de búsqueda de línea
+					dodgeState = DODGE_LINE_SEARCHING; // Transición directa a búsqueda de línea
 				}
-				dodgeState = DODGE_STANDBY;
 			} else {
 				turn_offset = -250 * dodge_direction; // Giro a la izquierda sobre el eje
 			}
@@ -2191,7 +2198,7 @@ void PID_ControlTask(void) {
 		break;
 
 		case DODGE_LINE_SEARCHING:
-			// 6. Avance frontal buscando la línea tras la última rotación (ÚNICA ETAPA DONDE SE BUSCA LÍNEA)
+			// 5. Avance frontal buscando la línea tras la última rotación (ÚNICA ETAPA DONDE SE BUSCA LÍNEA)
 			target_setpoint = attack_setpoint;
 			turn_offset = 0;
 
@@ -2303,68 +2310,57 @@ void PID_ControlTask(void) {
 
 
 	// =========================================================
-		// --- 5. MEZCLA DE MOTORES (Potencia de salida) ---
-		// =========================================================
-		int32_t pwm_left = 0;
-		int32_t pwm_right = 0;
+	// --- 5. MEZCLA DE MOTORES (Mezclador de Velocidades y PID) ---
+	// =========================================================
+	int32_t pwm_left = 0;
+	int32_t pwm_right = 0;
 
-		// Detectamos si el robot está en CUALQUIER modo que requiera rotar sobre su eje
-		uint8_t is_rotating_on_axis = ((robotMode == STATE_LINE_FOLLOWING && (lineState == LINE_LOST || lineState == LINE_SEARCHING)) ||
-	                                  (robotMode == STATE_DODGE && (dodgeState == DODGE_ROTATING_90 || dodgeState == DODGE_CORNER_ROTATING)));
+	// Detectamos si el robot está en búsqueda por pérdida estricta de línea (LINE_LOST / LINE_SEARCHING)
+	uint8_t is_rotating_pivot = (robotMode == STATE_LINE_FOLLOWING && (lineState == LINE_LOST || lineState == LINE_SEARCHING));
 
-		if (is_rotating_on_axis) {
-			// --- ROTACIÓN SOBRE PROPIO EJE (Pivot) ---
+	if (is_rotating_pivot) {
+		// --- ROTACIÓN PIVOT SOBRE PROPIO EJE (Búsqueda de línea) ---
+		int32_t raw_L = output + turn_offset;
+		int32_t raw_R = output - turn_offset;
 
-			// 1. Calculamos el esfuerzo bruto (Balanceo + Volante)
-			int32_t raw_L = output + turn_offset;
-			int32_t raw_R = output - turn_offset;
+		uint16_t rot_min_L = (lineState == LINE_LOST) ? 770 : PWM_LRot;
+		uint16_t rot_min_R = (lineState == LINE_LOST) ? 750 : PWM_RRot;
 
-			// 2. Determinamos los PWM mínimos. Usaremos los de DODGE si estamos en ese modo.
-			uint16_t rot_min_L = minPWM_Left;
-			uint16_t rot_min_R = minPWM_Right;
+		if (raw_L > 0)       pwm_left = raw_L + rot_min_L + offset_left;
+		else if (raw_L < 0)  pwm_left = raw_L - rot_min_L - offset_left;
 
-			if (robotMode == STATE_DODGE) {
-				rot_min_L = 850; // Fuerza para derrape
-				rot_min_R = 950;
-			} else if (lineState == LINE_LOST) {
-				rot_min_L = 770;
-				rot_min_R = 750;
-			} else {
-				rot_min_L = PWM_LRot;
-				rot_min_R = PWM_RRot;
-			}
+		if (raw_R > 0)       pwm_right = raw_R + rot_min_R + offset_right;
+		else if (raw_R < 0)  pwm_right = raw_R - rot_min_R - offset_right;
 
-			// 3. Aplicamos el minPWM según el signo FINAL de cada rueda.
-			// ¡Esto asegura que el balanceo siempre gane si el robot se está cayendo!
-			if (raw_L > 0)       pwm_left = raw_L + rot_min_L + offset_left;
-			else if (raw_L < 0)  pwm_left = raw_L - rot_min_L - offset_left;
+	} else {
+		// --- MEZCLADOR GENERAL DE VELOCIDADES DE MOTORES (DODGE_ROTATING_90, DODGE_CORNER_ROTATING y Translación) ---
+		// Vincula la rotación con el mezclador de velocidades para mantener la respuesta del PID de balanceo (output) alrededor del setpoint (+350)
+		uint16_t active_minPWM_Left = minPWM_Left;
+		uint16_t active_minPWM_Right = minPWM_Right;
 
-			if (raw_R > 0)       pwm_right = raw_R + rot_min_R + offset_right;
-			else if (raw_R < 0)  pwm_right = raw_R - rot_min_R - offset_right;
+		int32_t base_L = 0;
+		int32_t base_R = 0;
 
-		} else {
-			// --- AVANCE NORMAL (Translación) ---
-			uint16_t active_minPWM_Left = minPWM_Left;
-			uint16_t active_minPWM_Right = minPWM_Right;
-
-			if (output > 0) {
-				pwm_left = output + active_minPWM_Left + offset_left;
-				pwm_right = output + active_minPWM_Right + offset_right;
-			} else if (output < 0) {
-				pwm_left = output - active_minPWM_Left - offset_left;
-				pwm_right = output - active_minPWM_Right - offset_right;
-			}
-
-			if (output != 0) {
-				if (output > 0) {
-					pwm_left -= turn_offset;
-					pwm_right += turn_offset;
-				} else {
-					pwm_left += turn_offset;
-					pwm_right -= turn_offset;
-				}
-			}
+		if (output > 0) {
+			base_L = output + active_minPWM_Left + offset_left;
+			base_R = output + active_minPWM_Right + offset_right;
+		} else if (output < 0) {
+			base_L = output - active_minPWM_Left - offset_left;
+			base_R = output - active_minPWM_Right - offset_right;
 		}
+
+		// Mezcla diferencial uniforme de giro sin invertir dirección ni perder el setpoint PID
+		if (turn_offset != 0) {
+			if (base_L == 0) base_L = (turn_offset < 0) ? active_minPWM_Left : -active_minPWM_Left;
+			if (base_R == 0) base_R = (turn_offset < 0) ? -active_minPWM_Right : active_minPWM_Right;
+
+			pwm_left = base_L - turn_offset;
+			pwm_right = base_R + turn_offset;
+		} else {
+			pwm_left = base_L;
+			pwm_right = base_R;
+		}
+	}
 	// --- IMPULSO DIRECTO DE RECUPERACIÓN (Bypass del Balanceo) ---
 	if (backwards_recovery_active) {
 		pwm_left = -3000;  // Impulso directo marcha atrás controlado (30% duty cycle)
