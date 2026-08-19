@@ -432,10 +432,11 @@ uint16_t obs_align_dist = 2500;                       // Distancia objetivo del 
 // =========================================================
 typedef enum {
     DODGE_LINE_FOLLOWING,  // Seguimiento de línea normal monitoreando IR6
-    DODGE_PRE_ROTATE_WAIT, // Espera de 500ms erguido (+350) tras detectar la pared antes de rotar
+    DODGE_PRE_ROTATE_WAIT, // Espera de 500ms erguido (-350) tras detectar la pared antes de rotar 90°
     DODGE_ROTATING_90,     // Rotación continua de 90° a la derecha sobre su propio eje
     DODGE_WALL_FOLLOWING,  // Avanzar siguiendo proporcionalmente la pared lateral izquierda (cal_ir2)
-    DODGE_CORNER_ROTATING, // Rotación continua de 45° a la izquierda sobre su propio eje
+    DODGE_WALL1_WAIT,      // Espera de 2 segundos erguido (+350) al finalizar la Pared 1 antes de rotar 45°
+    DODGE_CORNER_ROTATING, // Rotación continua de 45°/30° a la izquierda sobre su propio eje
     DODGE_LINE_SEARCHING   // Avance hacia adelante buscando reconectarse a la línea
 } _eDodgeSubState;
 
@@ -2124,8 +2125,9 @@ void PID_ControlTask(void) {
 
 			if (abs_yaw >= 90000) { // 90.000° alcanzados
 				turn_offset = 0;
-				// MODIFICACIÓN TEMPORAL DE TESTEO: Se mantiene colgado en DODGE_ROTATING_90 con turn_offset=0 sin cambiar de estado
-				// dodgeState = DODGE_WALL_FOLLOWING;
+				dodge_yaw = 0;
+				dodge_timer = 0;
+				dodgeState = DODGE_WALL_FOLLOWING; // Transición activa a seguimiento de Pared 1
 			} else {
 				turn_offset = -250 * dodge_direction; // Giro a la derecha en el mezclador de velocidades
 			}
@@ -2134,40 +2136,69 @@ void PID_ControlTask(void) {
 
 		case DODGE_WALL_FOLLOWING: {
 			int16_t side_sensor = cal_ir2;
-			dodge_timer += DT_MS; // Temporizador de seguridad/inmunidad de la pared
-
-			// Umbral y tiempo de inmunidad según Pared 1 (dodge_wall_count == 0) o Pared 2 (dodge_wall_count == 1)
 			int16_t wall_end_threshold = (dodge_wall_count == 0) ? 250 : 100;
-			uint16_t immunity_ms = (dodge_wall_count == 0) ? 0 : 2000; // 2s de inmunidad únicamente tras la 1ra rotación de 45°
 
-			if (side_sensor < wall_end_threshold) {
-				// Solo permitir la transición tras transcurrir el tiempo de inmunidad (2s en la 2da pared)
-				if (dodge_timer >= immunity_ms) {
+			if (dodge_wall_count == 0) {
+				// --- PARED 1 (Costado principal del objeto) ---
+				dodge_timer += DT_MS; // Temporizador de avance e inmunidad inicial (1000 ms)
+
+				// Tras avanzar 1s y detectar que finalizó la pared (< 250), pasar a la espera de 2s
+				if (dodge_timer >= 1000 && side_sensor < wall_end_threshold) {
 					dodge_timer = 0;
 					dodge_yaw = 0;
-					dodgeState = DODGE_CORNER_ROTATING; // Transición directa al giro de esquina (45° o 30°)
+					dodgeState = DODGE_WALL1_WAIT; // Transición al estado explícito de espera de 2 segundos
 				} else {
-					// Durante los 2s de inmunidad inicial de la 2da pared, avanzar recto sin disparar giro
+					// Mientras detecte la pared (>= 250): Avanzar inclinado y seguir pared proporcionalmente
 					target_setpoint = attack_setpoint;
-					turn_offset = 0;
+
+					int16_t wall_target = 1000;    // Setpoint de distancia deseada a la pared
+					int16_t wall_turn_limit = 250; // Límite de giro suave
+
+					int32_t wall_err = side_sensor - wall_target;
+					turn_offset = -(wall_err / 4);
+
+					if (turn_offset > wall_turn_limit)        turn_offset = wall_turn_limit;
+					else if (turn_offset < -wall_turn_limit)  turn_offset = -wall_turn_limit;
 				}
 			} else {
-				// Sensor >= wall_end_threshold: Avanzar inclinado y seguir pared proporcionalmente
-				target_setpoint = attack_setpoint;
+				// --- PARED 2 (Cara posterior tras el giro de 45°) ---
+				dodge_timer += DT_MS; // Temporizador de inmunidad de la 2ª pared (2000 ms)
 
-				int16_t wall_target = 1000;    // Setpoint de distancia deseada a la pared
-				int16_t wall_turn_limit = 250; // Límite de giro suave
+				if (side_sensor < wall_end_threshold) {
+					if (dodge_timer >= 2000) { // 2s de inmunidad completados
+						dodge_timer = 0;
+						dodge_yaw = 0;
+						dodgeState = DODGE_CORNER_ROTATING; // Pasar al giro de 30°
+					} else {
+						target_setpoint = attack_setpoint;
+						turn_offset = 0;
+					}
+				} else {
+					target_setpoint = attack_setpoint;
+					int16_t wall_target = 1000;
+					int16_t wall_turn_limit = 250;
+					int32_t wall_err = side_sensor - wall_target;
+					turn_offset = -(wall_err / 4);
 
-				int32_t wall_err = side_sensor - wall_target;
-				turn_offset = -(wall_err / 4);
-
-				if (turn_offset > wall_turn_limit)
-					turn_offset = wall_turn_limit;
-				else if (turn_offset < -wall_turn_limit)
-					turn_offset = -wall_turn_limit;
+					if (turn_offset > wall_turn_limit)        turn_offset = wall_turn_limit;
+					else if (turn_offset < -wall_turn_limit)  turn_offset = -wall_turn_limit;
+				}
 			}
 		}
 		break;
+
+		case DODGE_WALL1_WAIT:
+			// Modo de Espera Post-Pared 1: Esperar 2 segundos (2000 ms) erguido en setpoint +350 antes de iniciar el giro de 45°
+			target_setpoint = 350;
+			turn_offset = 0;
+			dodge_timer += DT_MS;
+
+			if (dodge_timer >= 2000) { // 2000 ms = 2 segundos completados
+				dodge_timer = 0;
+				dodge_yaw = 0;
+				dodgeState = DODGE_CORNER_ROTATING; // Pasar al estado de rotación de 45°
+			}
+			break;
 
 		case DODGE_CORNER_ROTATING: {
 			// 4. Rotación continua sobre su propio eje a la izquierda manteniendo setpoint (+350)
