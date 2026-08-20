@@ -100,8 +100,8 @@ typedef enum {
 // //MPU
 // =========================================================
 #define MPU6050             1        // Identificador de tarea del giroscopio en la Pila I2C
-#define DT_MS               20       // Delta de tiempo nominal en ms para integración de giroscopio
-#define DT_US               20000    // Delta de tiempo nominal en us para el lazo PID
+#define DT_MS               5        // Delta de tiempo nominal en ms para integración de giroscopio (ajustado a 5ms)
+#define DT_US               5000     // Delta de tiempo nominal en us para el lazo PID (ajustado a 5ms)
 #define ALPHA_GYRO          980      // Confianza en escala x1000 del filtro complementario en el giroscopio (98.0%)
 #define ALPHA_ACC           20       // Confianza en escala x1000 del filtro complementario en el acelerómetro (2.0%)
 #define AZ_MIN_VALID        4000     // Mínimo valor absoluto del acelerómetro Z para validar el ángulo
@@ -147,8 +147,16 @@ typedef enum {
 // =========================================================
 #define SCALE_LINE          1000     // Factor de escala para el término cuadrático de error de línea
 #define IR_WHITE            500      // Umbral analógico para considerar superficie blanca
+#define IR6_BOX_THRESHOLD   2000     // Umbral analógico para detección de caja (IR6)
 #define LINE_LOST_PHASE0    35       // Duración de la primera fase de búsqueda en ciclos
 #define LINE_LOST_PHASE1    70       // Duración de la segunda fase de búsqueda en ciclos
+
+// Estados para la sub-MEF de pérdida de línea
+#define LINE_LOST_ROT_30      0
+#define LINE_LOST_WAIT        1
+#define LINE_LOST_ROT_60      2
+#define LINE_LOST_ROT_TOTAL   3
+#define LINE_LOST_WAIT_FINAL  4
 
 // =========================================================
 // //LUT
@@ -220,7 +228,7 @@ uint8_t hbIndex = 0;                                  // Índice para selecciona
 uint8_t time10ms;                                     // Temporizador incremental de 250us para llegar a 10ms
 uint8_t tmo100ms = 10;                                // Temporizador de paciencia para eventos de 100ms
 uint8_t tmo20ms = 2;                                  // Temporizador de paciencia para eventos de 20ms
-uint8_t tmo100 = 10;                                  // Divisor de ciclo para intercalar tareas en I2C (ajustado para TIM2 a 10ms para mantener refresco a 100ms)
+uint8_t tmo100 = 20;                                  // Divisor de ciclo para intercalar tareas en I2C (ajustado para TIM2 a 5ms para mantener refresco a 100ms)
 
 // =========================================================
 // //DISPLAY
@@ -305,7 +313,8 @@ static uint8_t udpReadyToStart = 0;                   // Bandera que indica que 
 // //REDES
 // =========================================================
 static const _sWiFiNetwork knownNetworks[] = {
-	{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.10"   },
+	{ "FCAL-Personal", "fcal-uner+2019",       "172.22.237.227" },
+	{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.11"   },
 	{ "FCAL",    "fcalconcordia.06-2019",    "172.23.190.89"  },
 	{ "SA04",    "12345678",                "10.93.92.213"   },
 	{ "InternetPlus_872f10_EXT", "wlan78d0ef", "192.168.1.52" },
@@ -324,9 +333,18 @@ const uint16_t LUT_IR5_DER[LUT_SIZE] = {102, 237, 375, 518, 705, 1092, 1255, 149
 const uint16_t LUT_PROMEDIO[LUT_SIZE] = {109, 234, 383, 508, 697, 1025, 1187, 1371, 1744, 2234, 2539, 2756, 3295, 3390, 3561, 3826}; // LUT de calibración promedio
 const uint16_t LUT_Y_SCALE[16] = {0, 67, 133, 200, 267, 333, 400, 467, 533, 600, 667, 733, 800, 867, 933, 1000}; // Escala normalizada de salida (0 = Blanco, 1000 = Negro)
 
+// (LUTs para sensores superiores eliminadas para usar valores crudos directamente)
+
 volatile int16_t cal_left_ir = 0;                     // Lectura calibrada del sensor IR izquierdo (Der-Raw en telemetría)
 volatile int16_t cal_center_ir = 0;                   // Lectura calibrada del sensor IR central (Cen-Raw en telemetría)
 volatile int16_t cal_right_ir = 0;                    // Lectura calibrada del sensor IR derecho (Izq-Raw en telemetría)
+
+// Lecturas calibradas de sensores superiores (esquivar objeto)
+volatile int16_t cal_ir0 = 0;
+volatile int16_t cal_ir2 = 0;
+volatile int16_t cal_ir4 = 0;
+volatile int16_t cal_ir6 = 0;
+volatile int16_t cal_ir7 = 0;
 
 // Prototipos de funciones de calibración asociadas
 static uint16_t LUT_Interpolate(const uint16_t *x, const uint16_t *lut_y, uint16_t raw);
@@ -349,29 +367,37 @@ int32_t derivative = 0;                               // Componente derivativo d
 int32_t integral = 0;                                 // Componente acumulativo integral del lazo PID
 int32_t output = 0;                                   // Acción de control total del lazo de equilibrio inyectada a los motores
 
-int16_t Kp_stable = 175;                              // Ganancia proporcional de equilibrio estático
-int16_t Kd_stable = 50;                               // Ganancia derivativa de equilibrio estático
-int16_t Ki_stable = 0;                                // Ganancia integral de equilibrio estático
+int16_t Kp_stable = 85;                               // Ganancia proporcional de equilibrio estático (ajustado por el usuario)
+int16_t Kd_stable = 2;                                // Ganancia derivativa de equilibrio estático (ajustado por el usuario)
+int16_t Ki_stable = 0;                                // Ganancia integral de equilibrio estático (revertido al valor original)
 
 uint16_t maxPWM = 9999;                               // Ciclo de trabajo máximo permitido (100%)
-uint16_t minPWM_Left = 870;                           // PWM mínimo que vence la fricción estática de la rueda izquierda
-uint16_t minPWM_Right = 1000;                         // PWM mínimo que vence la fricción estática de la rueda derecha
+uint16_t minPWM_Left = 800;                           // PWM mínimo que vence la fricción estática de la rueda izquierda
+uint16_t minPWM_Right = 1025;                         // PWM mínimo que vence la fricción estática de la rueda derecha
 uint16_t PWM_LRot = 880;                              // PWM estático de pivote de giro en búsqueda para rueda izquierda
 uint16_t PWM_RRot = 800;                              // PWM estático de pivote de giro en búsqueda para rueda derecha
 int16_t offset_left = 0;                              // Offset para compensación de deriva de tracción del motor izquierdo
 int16_t offset_right = 0;                             // Offset para compensación de deriva de tracción del motor derecho
 
 int32_t setpoint = -1000;                                // Setpoint de equilibrio estático base (x100 = 0.5°) ajustable por Qt
-int16_t attack_setpoint = -1200;                      // Setpoint de inclinación frontal para ataque (configurable por Qt)
-int16_t recovery_trigger_angle = -1500;               // Ángulo de inclinación que dispara la recuperación (configurable por Qt, x100 = -15.00°)
-int16_t recovery_target_angle = -500;                 // Ángulo al que se recupera durante la ventana de 250ms (configurable por Qt, x100 = -5.00°)
+int16_t attack_setpoint = -1600;                      // Setpoint de inclinación frontal para ataque (configurable por Qt)
+
+/* Variables del Lazo Cascada Externo */
+int32_t pwm_filtrado = 0;                             // Esfuerzo de motor filtrado LPF (Lazo Lento)
+int32_t integral_esfuerzo = 0;                         // Integral de error de esfuerzo para lazo externo
+int16_t angulo_modificador_pi = 0;                     // Corrección de ángulo calculado por PI (x100)
+
+/* Parámetros configurables del Lazo Externo */
+int16_t Kp_ext = 550;                                 // Ganancia proporcional de lazo externo (x1000)
+int16_t Ki_ext = 20;                                  // Ganancia integral de lazo externo (x10000)
+int16_t alfa_lpf = 10;                                // Coeficiente alfa del filtro LPF (0-100)
 
 // =========================================================
 // //SEGUIDOR
 // =========================================================
-int16_t Kp_line = 250;                                // Ganancia proporcional de guiñada para corrección rápida sobre la línea
+int16_t Kp_line = 300;                                // Ganancia proporcional de guiñada para corrección rápida sobre la línea
 int16_t Kq_line = 15;                                 // Ganancia derivativa/cuadrática de guiñada para atenuar oscilaciones
-int16_t Kp_line_backup = 250;                         // Respaldo de Kp_line al entrar a Swing
+int16_t Kp_line_backup = 300;                         // Respaldo de Kp_line al entrar a Swing
 int16_t Kq_line_backup = 15;                          // Respaldo de Kq_line al entrar a Swing
 int32_t sum_sensors = 0;                              // Suma de lecturas normalizadas de los sensores de línea activos
 int32_t error_linea = 0;                              // Desviación calculada de la línea (eje horizontal de error)
@@ -381,7 +407,6 @@ int32_t quad_term = 0;                                // Aporte cuadrático/deri
 int32_t turn_offset = 0;                              // Fuerza de rotación mezclada con el PID y enviada a los motores (Yaw)
 int32_t last_line_error = 0;                          // Error de línea del ciclo anterior
 int16_t custom_turn = 1;                              // Intensidad de giro prefijada para fases ciegas de búsqueda
-int16_t turn_divisor = 4;                             // Divisor del esfuerzo de giro para atenuar la severidad del desvío
 int16_t vel_damp_div = 500;                           // Divisor del término amortiguador de velocidad
 int16_t vel_damp_limit = 100;                         // Límite del amortiguador de velocidad
 int16_t turn_limit = 1000;                            // Límite superior absoluto del esfuerzo de giro motor (Yaw)
@@ -389,7 +414,7 @@ int16_t turn_limit = 1000;                            // Límite superior absolu
 int16_t ax_offset = 0;                                // Offset calibrado de gravedad en reposo del acelerómetro X
 
 _eLineState lineState = LINE_SEARCHING;               // Estado actual de la máquina del seguidor de línea
-uint8_t line_lost_timer = 0;                          // Temporizador en ciclos transcurridos desde que se perdió la pista
+uint16_t line_lost_timer = 0;                         // Temporizador en ciclos transcurridos desde que se perdió la pista
 uint8_t line_lost_phase = 0;                          // Fase de búsqueda secuencial actual (fase 0, 1 o 2)
 
 // =========================================================
@@ -406,14 +431,20 @@ uint16_t obs_align_dist = 2500;                       // Distancia objetivo del 
 // //DODGE ROTATION
 // =========================================================
 typedef enum {
-    DODGE_INIT,
-    DODGE_ROTATING,
-    DODGE_PAUSE
+    DODGE_LINE_FOLLOWING,  // Seguimiento de línea normal monitoreando IR6
+    DODGE_PRE_ROTATE_WAIT, // Espera de 500ms erguido (-350) tras detectar la pared antes de rotar 90°
+    DODGE_ROTATING_90,     // Rotación continua de 90° a la derecha sobre su propio eje
+    DODGE_WALL_FOLLOWING,  // Avanzar siguiendo proporcionalmente la pared lateral izquierda (cal_ir2)
+    DODGE_WALL1_WAIT,      // Espera de 2 segundos erguido (+350) al finalizar la Pared 1 antes de rotar 45°
+    DODGE_CORNER_ROTATING, // Rotación continua de 45°/30° a la izquierda sobre su propio eje
+    DODGE_LINE_SEARCHING   // Avance hacia adelante buscando reconectarse a la línea
 } _eDodgeSubState;
 
-volatile _eDodgeSubState dodgeState = DODGE_INIT;
+volatile _eDodgeSubState dodgeState = DODGE_LINE_FOLLOWING;
 volatile int32_t dodge_yaw = 0;
+volatile int32_t dodge_step_target_yaw = 2000; // Micro-paso inicial de 2.0° (2,000 mdeg)
 volatile uint32_t dodge_timer = 0;
+volatile uint8_t dodge_wall_count = 0;
 volatile int16_t gz_offset = 0;
 
 /* USER CODE END PV */
@@ -477,10 +508,13 @@ void httpTask(void);
 void OnESP01ChangeState(_eESP01STATUS state);
 //PID
 void PID_ControlTask(void);
+void LineFollowingMEF(int32_t left_ir, int32_t center_ir, int32_t right_ir, int32_t *target_setpoint);
 void Speed_IntegrationTask(uint32_t dt_us);
 static void WiFi_ScanTick(void);
 static void UART_EnforceReceiverActive(void);
 static void WiFi_HeartbeatTick(void);
+
+void HandleModeScreenTransition(void);
 
 /* USER CODE END PFP */
 
@@ -511,14 +545,24 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 		HAL_ADC_Start_DMA(&hadc1, (uint32_t*) adcData, 8);
 	}
 
-	if (htim->Instance == TIM2) { // 10ms (ajustado para muestreo más rápido)
-		Pila[i2cIndex] = MPU6050;
-		i2cIndex++;
-		i2cIndex&=(I2CSIZE-1);
+	if (htim->Instance == TIM2) { // 5ms (ajustado para muestreo rápido)
+		// En modos de movimiento, encolamos el MPU6050 en cada ciclo de 5ms
+		if (robotMode == STATE_SWING || robotMode == STATE_LINE_FOLLOWING || robotMode == STATE_DODGE) {
+			Pila[i2cIndex] = MPU6050;
+			i2cIndex++;
+			i2cIndex&=(I2CSIZE-1);
+		}
+
 		tmo100--;
 		if(!tmo100){
-			tmo100=10; // 10 * 10ms = 100ms para mantener el intervalo de actualización de la pantalla
+			tmo100=20; // 20 * 5ms = 100ms para mantener el intervalo de actualización de la pantalla
+			// En modos de pantalla, leemos el MPU y luego actualizamos la pantalla secuencialmente una vez cada 100ms
+			// Evita por completo la superposición y colisión de tareas I2C durante la visualización activa
 			if (robotMode == STATE_FIRST_SCREEN || robotMode == STATE_SECOND_SCREEN) {
+				Pila[i2cIndex] = MPU6050;
+				i2cIndex++;
+				i2cIndex&=(I2CSIZE-1);
+
 				Pila[i2cIndex] = SSD1306;
 				i2cIndex++;
 				i2cIndex&=(I2CSIZE-1);
@@ -771,15 +815,15 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((params_rot[i] >> 8) & 0xFF));
 		}
 
-		// 6. Nuevos Parámetros (4 bytes: angle_limit, turn_divisor)
-		int16_t new_params[2] = { 0, turn_divisor };
+		// 6. Nuevos Parámetros (4 bytes: angle_limit, Kp_ext)
+		int16_t new_params[2] = { 0, Kp_ext };
 		for (int i = 0; i < 2; i++) {
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (new_params[i] & 0xFF));
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((new_params[i] >> 8) & 0xFF));
 		}
 
-		// 7. Anti-collapse Setpoints (4 bytes: save_min, save_max) -> Ahora dinámicos de recuperación
-		int16_t save_params[2] = { recovery_trigger_angle, recovery_target_angle };
+		// 7. Anti-collapse Setpoints (4 bytes: Ki_ext, alfa_lpf)
+		int16_t save_params[2] = { Ki_ext, alfa_lpf };
 		for (int i = 0; i < 2; i++) {
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (save_params[i] & 0xFF));
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((save_params[i] >> 8) & 0xFF));
@@ -948,13 +992,13 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		PWM_RRot = myWord.ui16[0];
 		break;
-	case SETTURNDIV:
-		unerPrtcl_PutHeaderOnTx(dataTx, SETTURNDIV, 2);
+	case SET_KP_EXT:
+		unerPrtcl_PutHeaderOnTx(dataTx, SET_KP_EXT, 2);
 		unerPrtcl_PutByteOnTx(dataTx, ACK);
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
 		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
-		turn_divisor = myWord.i16[0];
+		Kp_ext = myWord.i16[0];
 		break;
 	case SETLIMITANG:
 		unerPrtcl_PutHeaderOnTx(dataTx, SETLIMITANG, 2);
@@ -963,21 +1007,21 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		break;
-	case SETPOINTSAVEMIN:
-		unerPrtcl_PutHeaderOnTx(dataTx, SETPOINTSAVEMIN, 2);
+	case SET_KI_EXT:
+		unerPrtcl_PutHeaderOnTx(dataTx, SET_KI_EXT, 2);
 		unerPrtcl_PutByteOnTx(dataTx, ACK);
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
 		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
-		recovery_trigger_angle = myWord.i16[0];
+		Ki_ext = myWord.i16[0];
 		break;
-	case SETPOINTSAVEMAX:
-		unerPrtcl_PutHeaderOnTx(dataTx, SETPOINTSAVEMAX, 2);
+	case SET_ALFA_LPF:
+		unerPrtcl_PutHeaderOnTx(dataTx, SET_ALFA_LPF, 2);
 		unerPrtcl_PutByteOnTx(dataTx, ACK);
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
 		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
-		recovery_target_angle = myWord.i16[0];
+		alfa_lpf = myWord.i16[0];
 		break;
 	case SETVELDAMPDIV:
 		unerPrtcl_PutHeaderOnTx(dataTx, SETVELDAMPDIV, 2);
@@ -1689,7 +1733,6 @@ void buttonTask(_sButton *button) {
 		// Limpiar pantalla a negro síncrono por hardware antes de apagar
 		ssd1306_Fill(Black);
 		ssd1306_UpdateScreen();
-		ssd1306_SetDisplayOn(0); // Apagar físicamente la pantalla
 
 		switch (button->clickCount) {
 			case 1:
@@ -1714,6 +1757,7 @@ void buttonTask(_sButton *button) {
 				break;
 			case 3:
 				robotMode = STATE_DODGE;
+				dodgeState = DODGE_LINE_FOLLOWING;
 				hbIndex = 2; // LED Dodge (3 parpadeos)
 
 				// Restaurar ganancias de seguimiento de línea si venían de estar en 0 (Swing)
@@ -1782,23 +1826,169 @@ void buttonTask(_sButton *button) {
 	}
 }
 
+void LineFollowingMEF(int32_t left_ir, int32_t center_ir, int32_t right_ir, int32_t *target_setpoint) {
+	static uint16_t line_lost_debounce_count = 0;
+	static int32_t last_turn_offset = 0;
+	static int32_t line_lost_yaw = 0;
+	static int8_t search_direction = 1;
+
+	uint8_t ir1_active = (left_ir < IR_WHITE);
+	uint8_t ir3_active = (center_ir < IR_WHITE);
+	uint8_t ir5_active = (right_ir < IR_WHITE);
+	uint8_t active_count = ir1_active + ir3_active + ir5_active;
+
+	switch (lineState) {
+	case LINE_SEARCHING:
+		if (ir3_active) {
+			lineState = LINE_FOLLOWING;
+		} else {
+			turn_offset = -custom_turn;
+		}
+		break;
+
+	case LINE_FOLLOWING:
+		if (active_count == 3 && ir1_active && ir3_active && ir5_active) {
+			lineState = LINE_CROSS;
+			break;
+		}
+
+		if (active_count == 0) {
+			line_lost_debounce_count++;
+			if (line_lost_debounce_count >= 6) {
+				line_lost_debounce_count = 0;
+				line_lost_timer = 0;
+				line_lost_phase = LINE_LOST_ROT_30;
+				line_lost_yaw = 0;
+				search_direction = (last_line_error >= 0) ? -1 : 1;
+				lineState = LINE_LOST;
+				break;
+			}
+			error_linea = last_line_error;
+			turn_offset = last_turn_offset;
+		} else {
+			line_lost_debounce_count = 0;
+
+			error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors) / 10;
+			abs_error = (error_linea > 0) ? error_linea : -error_linea;
+
+			int32_t linear_term = (Kp_line * error_linea);
+			int32_t quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
+
+			turn_offset = linear_term + quad_term;
+			if (turn_offset > turn_limit)        turn_offset = turn_limit;
+			else if (turn_offset < -turn_limit)  turn_offset = -turn_limit;
+
+			last_turn_offset = turn_offset;
+		}
+		last_line_error = error_linea;
+
+		*target_setpoint = attack_setpoint;
+		break;
+
+	case LINE_LOST:
+		if (ir3_active) {
+			lineState = LINE_FOLLOWING;
+			break;
+		}
+
+		// Integración del ángulo de yaw usando el giroscopio Z (gz) y su offset
+		{
+			int32_t gz_cal = gz - gz_offset;
+			line_lost_yaw += ((int64_t)gz_cal * DT_US) / 131000LL;
+		}
+
+		// Configurar setpoint de equilibrio menos inclinado para evitar cabeceo excesivo
+		*target_setpoint = -100;
+
+		switch (line_lost_phase) {
+		case LINE_LOST_ROT_30:
+			// Rotar 30 grados hacia el lado de la línea (en el sentido de search_direction)
+			turn_offset = (search_direction > 0) ? 350 : -350;
+			{
+				int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
+				if (abs_yaw >= 30000) { // 30 grados = 30,000 miligrados
+					line_lost_yaw = 0;
+					line_lost_timer = 0;
+					line_lost_phase = LINE_LOST_WAIT;
+				}
+			}
+			break;
+
+		case LINE_LOST_WAIT:
+			// Detener rotación durante 500 ms (100 ciclos x 5 ms = 500 ms)
+			turn_offset = 0;
+			line_lost_timer++;
+			if (line_lost_timer >= 100) {
+				line_lost_yaw = 0;
+				line_lost_timer = 0;
+				line_lost_phase = LINE_LOST_ROT_60;
+			}
+			break;
+
+		case LINE_LOST_ROT_60:
+			// Rotar 60 grados hacia el otro lado (opuesto a search_direction)
+			turn_offset = (search_direction > 0) ? -350 : 350;
+			{
+				int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
+				if (abs_yaw >= 60000) { // 60 grados = 60,000 miligrados
+					line_lost_yaw = 0;
+					line_lost_timer = 0;
+					line_lost_phase = LINE_LOST_ROT_TOTAL;
+				}
+			}
+			break;
+
+		case LINE_LOST_ROT_TOTAL:
+			// Rotar 360 grados en sentido contrario al caso de 60 grados (es decir, en el sentido de search_direction)
+			turn_offset = (search_direction > 0) ? 350 : -350;
+			{
+				int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
+				if (abs_yaw >= 360000) { // 360 grados = 360,000 miligrados
+					line_lost_yaw = 0;
+					line_lost_timer = 0;
+					line_lost_phase = LINE_LOST_WAIT_FINAL;
+				}
+			}
+			break;
+
+		case LINE_LOST_WAIT_FINAL:
+		default:
+			// Parar motores
+			turn_offset = 0;
+			break;
+		}
+		break;
+
+	case LINE_CROSS:
+		if (active_count < 3) {
+			lineState = LINE_FOLLOWING;
+			break;
+		}
+		break;
+
+	default:
+		lineState = LINE_SEARCHING;
+		break;
+	}
+}
+
 void PID_ControlTask(void) {
 	if (RUN_PID == FALSE)
 		return;
 	RUN_PID = FALSE;
 
 	// Variables estáticas persistentes de estado
-	static uint16_t line_lost_debounce_count = 0;
-	static int32_t last_turn_offset = 0;
+	static int32_t last_angle = 0;
+	static int8_t dodge_direction = 1;
 
 	measured_dt_ms = DT_MS;
 
 	// =========================================================
 	// --- 1. LECTURA DIRECTA DE SENSORES DE LÍNEA ---
 	// =========================================================
-	uint16_t raw_left   = adcData[1];
-	uint16_t raw_center = adcData[3];
-	uint16_t raw_right  = adcData[5];
+	uint16_t raw_left   = adcDataTx[1];
+	uint16_t raw_center = adcDataTx[3];
+	uint16_t raw_right  = adcDataTx[5];
 
 	// Normalización e interpolación directa por LUT
 	uint16_t raw_sensors[4] = {
@@ -1823,6 +2013,13 @@ void PID_ControlTask(void) {
 	if (sum_sensors == 0)
 		sum_sensors = 1;
 
+	// Lectura directa de sensores de distancia superiores (esquivar objeto) sin normalización
+	cal_ir0 = (int16_t)adcDataTx[0];
+	cal_ir2 = (int16_t)adcDataTx[2];
+	cal_ir4 = (int16_t)adcDataTx[4];
+	cal_ir6 = (int16_t)adcDataTx[6];
+	cal_ir7 = (int16_t)adcDataTx[7];
+
 	// =========================================================
 	// --- 2. FILTROS Y CÁLCULO DE ÁNGULO (IMU) ---
 	// =========================================================
@@ -1838,198 +2035,291 @@ void PID_ControlTask(void) {
 		acc_angle_hr = (int32_t) ax_filt * 35;
 	}
 
-	gyro_delta_hr = (-(int32_t) gy * 200) / 131;
-	current_angle_hr = (ALPHA_GYRO * (current_angle_hr + gyro_delta_hr)
-			+ ALPHA_ACC * acc_angle_hr) / 1000;
+	gyro_delta_hr = (-(int32_t) gy * 50) / 131;
 
-	// Límites de seguridad extremos por software (+/- 90 grados)
-	if (current_angle_hr > 900000)  current_angle_hr = 900000;
-	if (current_angle_hr < -900000) current_angle_hr = -900000;
+		// Restauramos el filtro complementario puro. El acelerómetro DEBE
+		// permanecer activo para corregir la deriva cruzada del giroscopio.
+		current_angle_hr = (ALPHA_GYRO * (current_angle_hr + gyro_delta_hr)
+				+ ALPHA_ACC * acc_angle_hr) / 1000;
 
-	current_angle = current_angle_hr / 100;
+		// Límites de seguridad extremos por software (+/- 90 grados)
+		if (current_angle_hr > 900000)  current_angle_hr = 900000;
+		if (current_angle_hr < -900000) current_angle_hr = -900000;
 
+		current_angle = current_angle_hr / 100;
 	// =========================================================
 	// --- 3. MÁQUINA DE ESTADOS: DIRECCIÓN / DODGE ROTATION ---
 	// =========================================================
 	int32_t target_setpoint = setpoint; 
 	turn_offset = 0;
 
-	uint8_t ir1_active = (left_ir > IR_WHITE);
-	uint8_t ir3_active = (center_ir > IR_WHITE);
-	uint8_t ir5_active = (right_ir > IR_WHITE);
+	uint8_t ir1_active = (left_ir < IR_WHITE);
+	uint8_t ir3_active = (center_ir < IR_WHITE);
+	uint8_t ir5_active = (right_ir < IR_WHITE);
 	uint8_t active_count = ir1_active + ir3_active + ir5_active;
 
-	static uint16_t recovery_cycles = 0; // Contador de ciclos de recuperación de balance estático
-
-	if (robotMode == STATE_DODGE) {
-		// --- MÁQUINA DE ESTADOS DE ROTACIÓN DE DODGE ---
-		target_setpoint = setpoint; // Mantener balance estático en su lugar
-
-		// Integración de yaw continua usando gz calibrado
-		int32_t gz_calibrated = gz - gz_offset;
-		dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
-
-		switch (dodgeState) {
-		case DODGE_INIT:
-			dodge_yaw = 0;
-			dodge_timer = 0;
-			dodgeState = DODGE_ROTATING;
-			break;
-
-		case DODGE_ROTATING:
-			{
-				int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
-				if (abs_yaw >= 90000) { // 90 grados = 90,000 miligrados
-					turn_offset = 0;
-					dodge_timer = 0;
-					dodgeState = DODGE_PAUSE;
-				} else {
-					turn_offset = 350; // Esfuerzo de giro constante sobre el propio eje
-				}
-			}
-			break;
-
-		case DODGE_PAUSE:
-			turn_offset = 0;
-			dodge_timer += DT_US;
-			if (dodge_timer >= 500000) { // 500ms = 500,000us
-				dodgeState = DODGE_INIT;
-			}
-			break;
-
-		default:
-			dodgeState = DODGE_INIT;
-			break;
-		}
-	} else {
-		switch (lineState) {
-
-		case LINE_SEARCHING:
-			recovery_cycles = 0; // Resetear temporizador al buscar la línea
-			if (ir3_active) {
-				lineState = LINE_FOLLOWING;
-			} else {
-				turn_offset = -custom_turn;
-			}
-			break;
-
-		case LINE_FOLLOWING:
-			if (active_count == 3 && ir1_active && ir3_active && ir5_active) {
-				lineState = LINE_CROSS;
-				recovery_cycles = 0;
-				break;
-			}
-
-			if (active_count == 0) {
-				line_lost_debounce_count++;
-				if (line_lost_debounce_count >= 6) {
-					line_lost_debounce_count = 0;
-					line_lost_timer = 0;
-					line_lost_phase = 0;
-					lineState = LINE_LOST;
-					recovery_cycles = 0;
-					break;
-				}
-				error_linea = last_line_error;
-				turn_offset = last_turn_offset;
-			} else {
-				line_lost_debounce_count = 0;
-
-				error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors) / 10;
-				abs_error = (error_linea > 0) ? error_linea : -error_linea;
-
-				linear_term = Kp_line * error_linea;
-				quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
-
-				if (turn_divisor == 0) turn_divisor = 1;
-				turn_offset = (linear_term + quad_term) / turn_divisor;
-
-				if (turn_offset > turn_limit)        turn_offset = turn_limit;
-				else if (turn_offset < -turn_limit)  turn_offset = -turn_limit;
-
-				last_turn_offset = turn_offset;
-			}
-			last_line_error = error_linea;
-
-			// Si está activo el temporizador de recuperación de 250ms
-			if (recovery_cycles > 0) {
-				recovery_cycles--;
-				target_setpoint = recovery_target_angle;  // Ángulo de recuperación dinámico de Qt
-			} else {
-				// Si la inclinación frontal supera el límite de gatillo (numéricamente menor al trigger de recuperación)
-				if (current_angle < recovery_trigger_angle) {
-					recovery_cycles = 12;       // Iniciar periodo de recuperación de ~250 ms (12 ciclos x 20ms = 240ms)
-					target_setpoint = recovery_target_angle;  // Ángulo de recuperación dinámico inmediato
-				} else {
-					target_setpoint = attack_setpoint;  // En condiciones normales, setear el ángulo de ataque dinámico de Qt
-				}
-			}
-			break;
-
-		case LINE_LOST:
-			recovery_cycles = 0; // Resetear temporizador al perder la línea
-			if (ir3_active) {
-				lineState = LINE_FOLLOWING;
-				break;
-			}
-
-			if (line_lost_phase == 0) {
-				turn_offset = (last_line_error > 0) ? custom_turn : -custom_turn;
-				line_lost_timer++;
-				if (line_lost_timer >= LINE_LOST_PHASE0) {
-					line_lost_timer = 0;
-					line_lost_phase = 1;
-				}
-			} else if (line_lost_phase == 1) {
-				turn_offset = (last_line_error > 0) ? -custom_turn : custom_turn;
-				line_lost_timer++;
-				if (line_lost_timer >= LINE_LOST_PHASE1) {
-					line_lost_timer = 0;
-					line_lost_phase = 2;
-				}
-			} else {
-				turn_offset = (last_line_error > 0) ? -custom_turn : custom_turn;
-			}
-			break;
-
-		case LINE_CROSS:
-			recovery_cycles = 0; // Resetear temporizador al cruzar
-			if (active_count < 3) {
-				lineState = LINE_FOLLOWING;
-				break;
-			}
-			break;
-
-		default:
-			recovery_cycles = 0;
-			lineState = LINE_SEARCHING;
-			break;
-		}
-	}
-
-	// Forzar balanceo estático en el lugar en modo STATE_SWING (evitar giros y avances de ataque)
-	if (robotMode == STATE_SWING) {
+	switch (robotMode) {
+	case STATE_SWING:
+		// --- MODO 1: BALANCEO ESTÁTICO ---
 		turn_offset = 0;
 		target_setpoint = setpoint; // Forzar setpoint de equilibrio estático puro de Qt (0.5°)
+		break;
+
+	case STATE_LINE_FOLLOWING:
+		// --- MODO 2: SEGUIMIENTO DE LÍNEA ---
+		LineFollowingMEF(left_ir, center_ir, right_ir, &target_setpoint);
+		break;
+
+	case STATE_DODGE:
+		// --- MODO 3: ESQUIVADO DE OBSTÁCULOS OPTIMIZADO (MEF MINIMALISTA) ---
+		switch (dodgeState) {
+		case DODGE_LINE_FOLLOWING:
+			// 1. Seguimiento de línea normal mientras monitorea el sensor frontal IR6
+			LineFollowingMEF(left_ir, center_ir, right_ir, &target_setpoint);
+
+			// Frenado ultra-agresivo al aproximarse al objeto (cal_ir6 aumenta de 50 a 300)
+			if (cal_ir6 > 50) {
+				int16_t ir_val = (cal_ir6 > 300) ? 300 : cal_ir6;
+				// Rampa lineal acelerada desde attack_setpoint (en IR=50) hasta +800 (en IR=300)
+				int32_t ramp_setpoint = attack_setpoint + ((800 - (int32_t)attack_setpoint) * (ir_val - 50)) / 250;
+				target_setpoint = ramp_setpoint;
+
+				// Reducción drástica del desplazamiento lateral
+				int32_t scale_factor = 300 - ir_val; // de 250 a 0
+				turn_offset = (turn_offset * scale_factor) / 250;
+			}
+
+			// Al alcanzar el umbral de detección frontal (>= 300), fijar setpoint agresivo en +800 y pasar a espera previa
+			if (cal_ir6 >= 300) {
+				target_setpoint = 800;
+				turn_offset = 0;
+				dodge_yaw = 0;
+				dodge_timer = 0;
+				dodge_wall_count = 0;
+				dodgeState = DODGE_PRE_ROTATE_WAIT; // Transición a espera previa de 500ms
+			}
+			break;
+
+		case DODGE_PRE_ROTATE_WAIT:
+			// Modo de Espera Pre-Giro: Esperar 500 ms frenado con inclinación ultra-agresiva (+800) antes de iniciar la rotación de 90°
+			target_setpoint = 800;
+			turn_offset = 0;
+			dodge_timer += DT_MS;
+
+			if (dodge_timer >= 500) { // 500 ms = 0.5 segundos completados
+				dodge_timer = 0;
+				dodge_yaw = 0;
+				dodgeState = DODGE_ROTATING_90; // Pasar al estado de rotación de 90°
+			}
+			break;
+
+		case DODGE_ROTATING_90: {
+			// 2. Rotación continua de 90° a la derecha sobre su propio eje manteniendo setpoint (-350)
+			target_setpoint = -350;
+			integral = (integral * 9) / 10;
+
+			int32_t gz_calibrated = gz - gz_offset;
+			dodge_yaw += ((int64_t) gz_calibrated * DT_US) / 131000LL;
+
+			int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
+
+			if (abs_yaw >= 90000) { // 90.000° alcanzados
+				turn_offset = 0;
+				dodge_yaw = 0;
+				dodge_timer = 0;
+				dodgeState = DODGE_WALL_FOLLOWING; // Transición activa a seguimiento de Pared 1
+			} else {
+				turn_offset = -250 * dodge_direction; // Giro a la derecha en el mezclador de velocidades
+			}
+		}
+		break;
+
+		case DODGE_WALL_FOLLOWING: {
+			int16_t side_sensor = cal_ir2;
+			int16_t wall_end_threshold = 50; // Umbral de aire libre (50) para detectar fin real de pared
+			static uint32_t wall_lost_timer = 0;
+
+			dodge_timer += DT_MS; // Temporizador en seguimiento de pared
+
+			// MEDIDA DE SEGURIDAD: Durante el primer segundo (1000 ms), queda PROHIBIDO cambiar de estado
+			if (dodge_timer < 1000) {
+				wall_lost_timer = 0;
+				target_setpoint = attack_setpoint;
+
+				int16_t wall_target = 1000;    // Setpoint de distancia deseada a la pared
+				int16_t wall_turn_limit = 250; // Límite de giro suave
+
+				int32_t wall_err = side_sensor - wall_target;
+				turn_offset = -(wall_err / 4);
+
+				if (turn_offset > wall_turn_limit)        turn_offset = wall_turn_limit;
+				else if (turn_offset < -wall_turn_limit)  turn_offset = -wall_turn_limit;
+			} else {
+				// Pasado el primer segundo de inmunidad obligatoria, evaluar posible fin de pared (< 50)
+				if (side_sensor < wall_end_threshold) {
+					wall_lost_timer += DT_MS;
+
+					if (wall_lost_timer >= 500) { // 500 ms sostenidos por debajo de 50
+						wall_lost_timer = 0;
+						dodge_timer = 0;
+						dodge_yaw = 0;
+						dodgeState = DODGE_WALL1_WAIT; // Pasar a la espera de 2s erguido (+350)
+					}
+				} else {
+					wall_lost_timer = 0;
+					target_setpoint = attack_setpoint;
+
+					int16_t wall_target = 1000;    // Setpoint de distancia deseada a la pared
+					int16_t wall_turn_limit = 250; // Límite de giro suave
+
+					int32_t wall_err = side_sensor - wall_target;
+					turn_offset = -(wall_err / 4);
+
+					if (turn_offset > wall_turn_limit)        turn_offset = wall_turn_limit;
+					else if (turn_offset < -wall_turn_limit)  turn_offset = -wall_turn_limit;
+				}
+			}
+		}
+		break;
+
+		case DODGE_WALL1_WAIT:
+			// Modo de Espera Post-Pared 1: Esperar 2 segundos (2000 ms) erguido en setpoint +350 antes de iniciar el giro de 45°
+			target_setpoint = 350;
+			turn_offset = 0;
+			dodge_timer += DT_MS;
+
+			if (dodge_timer >= 2000) { // 2000 ms = 2 segundos completados
+				dodge_timer = 0;
+				dodge_yaw = 0;
+				dodgeState = DODGE_CORNER_ROTATING; // Pasar al estado de rotación de 45°
+			}
+			break;
+
+		case DODGE_CORNER_ROTATING: {
+			// 4. Rotación continua sobre su propio eje a la izquierda manteniendo setpoint (+350)
+			target_setpoint = 350;
+			integral = (integral * 9) / 10;
+
+			int32_t gz_calibrated = gz - gz_offset;
+			dodge_yaw += ((int64_t) gz_calibrated * DT_US) / 131000LL;
+
+			int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
+			int32_t target_yaw = (dodge_wall_count == 0) ? 45000 : 30000; // 45° la 1ra vez, 30° la 2da vez
+
+			if (abs_yaw >= target_yaw) {
+				turn_offset = 0;
+				dodge_yaw = 0;
+				dodge_timer = 0;
+				dodge_wall_count++;
+
+				if (dodge_wall_count < 2) {
+					dodgeState = DODGE_WALL_FOLLOWING; // Transición directa a Pared 2
+				} else {
+					dodgeState = DODGE_LINE_SEARCHING; // Transición directa a búsqueda de línea
+				}
+			} else {
+				turn_offset = -250 * dodge_direction; // Giro a la izquierda sobre el eje
+			}
+		}
+		break;
+
+		case DODGE_LINE_SEARCHING:
+			// 5. Avance frontal buscando la línea tras la última rotación (ÚNICA ETAPA DONDE SE BUSCA LÍNEA)
+			target_setpoint = attack_setpoint;
+			turn_offset = 0;
+
+			// Detectar la línea negra tras completar la última rotación
+			if (center_ir >= 500 || left_ir >= 500 || right_ir >= 500) {
+				lineState = LINE_FOLLOWING;
+				dodgeState = DODGE_LINE_FOLLOWING; // Volver a seguimiento de línea normal
+			}
+			break;
+
+		default:
+			dodgeState = DODGE_LINE_FOLLOWING;
+			break;
+		}
+		break;
+
+	default:
+		// Para otros modos o estados no definidos
+		turn_offset = 0;
+		target_setpoint = setpoint;
+		break;
 	}
 
 	// --- CONTROL DE PREVENCIÓN DE CAÍDA TRASERA (Lógica del Gatillo) ---
 	static uint8_t backwards_recovery_active = 0;
-	if (robotMode == STATE_SWING || robotMode == STATE_LINE_FOLLOWING || robotMode == STATE_DODGE) {
-		if (current_angle > 500) { // Si la inclinación trasera supera 5.00° (500)
+	if (robotMode == STATE_SWING || robotMode == STATE_LINE_FOLLOWING) {
+		if (current_angle > 0) { // Si la inclinación trasera supera 0.00° (0)
 			backwards_recovery_active = 1;
-		} else if (current_angle <= 500) {
+		} else if (current_angle <= 0) {
 			backwards_recovery_active = 0;
 		}
 	} else {
 		backwards_recovery_active = 0;
 	}
 
+	// --- CONTROL DE PREVENCIÓN DE CAÍDA DELANTERA EN MODO SWING ---
+	static uint8_t forwards_recovery_active = 0;
+	if (robotMode == STATE_SWING) {
+		if (current_angle < -ANG15) { // Si la inclinación delantera en Swing excede -15.00° (-1500)
+			forwards_recovery_active = 1;
+		} else if (current_angle >= -ANG15) {
+			forwards_recovery_active = 0;
+		}
+	} else {
+		forwards_recovery_active = 0;
+	}
+
+	// =========================================================
+	// --- LAZO DE CONTROL EN CASCADA EXTERNO (Cada 40ms) ---
+	// =========================================================
+	if (robotMode == STATE_LINE_FOLLOWING || robotMode == STATE_DODGE) {
+		static uint8_t slow_loop_counter = 0;
+		slow_loop_counter++;
+		if (slow_loop_counter >= 8) { // 8 * 5ms = 40ms
+			slow_loop_counter = 0;
+
+			// 1. Filtro pasa-bajos sobre la acción de control del motor (output)
+			// Nota: 'output' no incluye el minPWM, por lo que su valor base es bajito.
+			pwm_filtrado = (alfa_lpf * output + (100 - alfa_lpf) * pwm_filtrado) / 100;
+
+			// 2. Error de esfuerzo (Velocidad deseada es attack_setpoint, esfuerzo real es pwm_filtrado)
+			int32_t effort_error = (int32_t)attack_setpoint - pwm_filtrado;
+
+			// 3. Acumulación con límites anti-windup estrictos (+/- 50000)
+			integral_esfuerzo += effort_error;
+			if (integral_esfuerzo > 50000)  integral_esfuerzo = 50000;
+			if (integral_esfuerzo < -50000) integral_esfuerzo = -50000;
+
+			// 4. Salida PI (escalada a x100 para coincidir con el setpoint)
+			int32_t prop_term = (Kp_ext * effort_error) / 1000;
+			int32_t int_term = (Ki_ext * integral_esfuerzo) / 10000;
+			int32_t out_pi = prop_term + int_term;
+
+			// Saturación del modificador a un límite de +/- 15.00 grados (1500 centésimas)
+			if (out_pi > 1500)  out_pi = 1500;
+			if (out_pi < -1500) out_pi = -1500;
+
+			angulo_modificador_pi = (int16_t)out_pi;
+		}
+
+		// Sumar el modificador dinámico al target_setpoint
+		target_setpoint += angulo_modificador_pi;
+	} else {
+		// Reiniciar variables si no estamos en modo seguidor de línea
+		pwm_filtrado = 0;
+		integral_esfuerzo = 0;
+		angulo_modificador_pi = 0;
+	}
+
 	// =========================================================
 	// --- 4. LAZO PID CENTRAL (Equilibrio Balancín Puro) ---
 	// =========================================================
 	error = target_setpoint - current_angle;
-	derivative = (int32_t)(((int64_t)(error - last_error) * 1000000LL) / DT_US);
+	// Derivada sobre la medición (Derivative on Measurement) para evitar el Derivative Kick
+	derivative = (int32_t)(((int64_t)(last_angle - current_angle) * 1000000LL) / DT_US);
 
 	if (error > -150 && error < 150) {
 		integral += (error * (int32_t)DT_US) / 1000;
@@ -2042,64 +2332,70 @@ void PID_ControlTask(void) {
 	output = (Kp_stable * error + (Ki_stable * integral) / 1000
 			+ (Kd_stable * derivative)) / 10000;
 	last_error = error;
+	last_angle = current_angle;
+
 
 	// =========================================================
-	// --- 5. MEZCLA DE MOTORES (Potencia de salida) ---
+	// --- 5. MEZCLA DE MOTORES (Mezclador de Velocidades y PID) ---
 	// =========================================================
 	int32_t pwm_left = 0;
 	int32_t pwm_right = 0;
 
-	if (robotMode == STATE_DODGE && dodgeState == DODGE_ROTATING) {
-		// Modo rotación de DODGE con balanceo prioritario y compensación de fricción
-		if (output > 0) {
-			pwm_left = output + minPWM_Left + offset_left + turn_offset;
-			pwm_right = output + minPWM_Right + offset_right - turn_offset;
-		} else if (output < 0) {
-			pwm_left = output - minPWM_Left - offset_left + turn_offset;
-			pwm_right = output - minPWM_Right - offset_right - turn_offset;
-		} else {
-			pwm_left = minPWM_Left + offset_left + turn_offset;
-			pwm_right = -minPWM_Right - offset_right - turn_offset;
-		}
+	// Detectamos si el robot está en búsqueda por pérdida estricta de línea (LINE_LOST / LINE_SEARCHING)
+	uint8_t is_rotating_pivot = (robotMode == STATE_LINE_FOLLOWING && (lineState == LINE_LOST || lineState == LINE_SEARCHING));
+
+	if (is_rotating_pivot) {
+		// --- ROTACIÓN PIVOT SOBRE PROPIO EJE (Búsqueda de línea) ---
+		int32_t raw_L = output + turn_offset;
+		int32_t raw_R = output - turn_offset;
+
+		uint16_t rot_min_L = (lineState == LINE_LOST) ? 770 : PWM_LRot;
+		uint16_t rot_min_R = (lineState == LINE_LOST) ? 750 : PWM_RRot;
+
+		if (raw_L > 0)       pwm_left = raw_L + rot_min_L + offset_left;
+		else if (raw_L < 0)  pwm_left = raw_L - rot_min_L - offset_left;
+
+		if (raw_R > 0)       pwm_right = raw_R + rot_min_R + offset_right;
+		else if (raw_R < 0)  pwm_right = raw_R - rot_min_R - offset_right;
+
 	} else {
-		uint8_t is_rotating = (lineState == LINE_LOST || lineState == LINE_SEARCHING);
+		// --- MEZCLADOR GENERAL DE VELOCIDADES DE MOTORES (DODGE_ROTATING_90, DODGE_CORNER_ROTATING y Translación) ---
+		// Vincula la rotación con el mezclador de velocidades para mantener la respuesta del PID de balanceo (output) alrededor del setpoint (+350)
+		uint16_t active_minPWM_Left = minPWM_Left;
+		uint16_t active_minPWM_Right = minPWM_Right;
 
-		if (is_rotating) {
-			// Modo pivote seguro
-			int32_t raw_L = output + turn_offset;
-			int32_t raw_R = output - turn_offset;
+		int32_t base_L = 0;
+		int32_t base_R = 0;
 
-			if (raw_L > 0)       pwm_left = raw_L + PWM_LRot + offset_left;
-			else if (raw_L < 0)  pwm_left = raw_L - PWM_LRot - offset_left;
+		if (output > 0) {
+			base_L = output + active_minPWM_Left + offset_left;
+			base_R = output + active_minPWM_Right + offset_right;
+		} else if (output < 0) {
+			base_L = output - active_minPWM_Left - offset_left;
+			base_R = output - active_minPWM_Right - offset_right;
+		}
 
-			if (raw_R > 0)       pwm_right = raw_R + PWM_RRot + offset_right;
-			else if (raw_R < 0)  pwm_right = raw_R - PWM_RRot - offset_right;
+		// Mezcla diferencial uniforme de giro sin invertir dirección ni perder el setpoint PID
+		if (turn_offset != 0) {
+			if (base_L == 0) base_L = (turn_offset < 0) ? active_minPWM_Left : -active_minPWM_Left;
+			if (base_R == 0) base_R = (turn_offset < 0) ? -active_minPWM_Right : active_minPWM_Right;
+
+			pwm_left = base_L - turn_offset;
+			pwm_right = base_R + turn_offset;
 		} else {
-			// Modo avance normal
-			if (output > 0) {
-				pwm_left = output + minPWM_Left + offset_left;
-				pwm_right = output + minPWM_Right + offset_right;
-			} else if (output < 0) {
-				pwm_left = output - minPWM_Left - offset_left;
-				pwm_right = output - minPWM_Right - offset_right;
-			}
-
-			if (output != 0) {
-				if (output > 0) {
-					pwm_left -= turn_offset;
-					pwm_right += turn_offset;
-				} else {
-					pwm_left += turn_offset;
-					pwm_right -= turn_offset;
-				}
-			}
+			pwm_left = base_L;
+			pwm_right = base_R;
 		}
 	}
-
-	// --- IMPULSO DIRECTO DE RECUPERACIÓN TRASERA (Bypass del Balanceo) ---
+	// --- IMPULSO DIRECTO DE RECUPERACIÓN (Bypass del Balanceo) ---
 	if (backwards_recovery_active) {
-		pwm_left = -3000;  // Impulso directo marcha atrás controlado (20% duty cycle)
+		pwm_left = -3000;  // Impulso directo marcha atrás controlado (30% duty cycle)
 		pwm_right = -3000;
+		integral = 0;      // Resetear integrador para evitar descontrol al volver a balancear
+		last_error = 0;
+	} else if (forwards_recovery_active) {
+		pwm_left = 3000;   // Impulso directo marcha adelante en modo SWING (30% duty cycle)
+		pwm_right = 3000;
 		integral = 0;      // Resetear integrador para evitar descontrol al volver a balancear
 		last_error = 0;
 	}
@@ -2130,8 +2426,9 @@ void PID_ControlTask(void) {
 	if (pwm_right > (int32_t) maxPWM)  pwm_right = (int32_t) maxPWM;
 	if (pwm_right < -(int32_t) maxPWM) pwm_right = -(int32_t) maxPWM;
 
-	// Silenciado de motores si no estamos en un modo de movimiento
-	if (robotMode != STATE_SWING && robotMode != STATE_LINE_FOLLOWING && robotMode != STATE_DODGE) {
+	// Silenciado de motores si no estamos en un modo de movimiento o si se detuvo por pérdida de línea
+	if ((robotMode != STATE_SWING && robotMode != STATE_LINE_FOLLOWING && robotMode != STATE_DODGE) ||
+		(robotMode == STATE_LINE_FOLLOWING && lineState == LINE_LOST && line_lost_phase == LINE_LOST_WAIT_FINAL)) {
 		pwm_left = 0;
 		pwm_right = 0;
 		integral = 0;
@@ -2198,6 +2495,53 @@ void NormalizeLineSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm)
     norm[1] = LUT_Interpolate(lut_l2_x, lut_l2_y, adcDataTx_ptr[1]);
     norm[2] = LUT_Interpolate(lut_l3_x, lut_l3_y, adcDataTx_ptr[2]);
     norm[3] = LUT_Interpolate(lut_l4_x, lut_l4_y, adcDataTx_ptr[3]);
+}
+
+
+
+void HandleModeScreenTransition(void) {
+	static _eRobotMode lastMode = (_eRobotMode)-1;
+	if (robotMode != lastMode) {
+		lastMode = robotMode;
+
+		if (robotMode == STATE_SWING || robotMode == STATE_LINE_FOLLOWING || robotMode == STATE_DODGE) {
+			// Esperar a que el bus I2C esté listo
+			while (HAL_I2C_GetState(&hi2c2) != HAL_I2C_STATE_READY) {
+				// Espera activa segura
+			}
+
+			ssd1306_SetDisplayOn(1);
+			ssd1306_Fill(Black);
+
+			if (robotMode == STATE_SWING) {
+				// Centrar ">>>MODO 1 -  BALANCEO<<<"
+				// Primera línea: ">>>MODO 1<<<" (12 caracteres)
+				ssd1306_SetCursor((128 - 12 * 7) / 2, 20);
+				ssd1306_WriteString(">>>MODO 1<<<", Font_7x10, White);
+				// Segunda línea: "BALANCEO" (8 caracteres)
+				ssd1306_SetCursor((128 - 8 * 7) / 2, 34);
+				ssd1306_WriteString("BALANCEO", Font_7x10, White);
+			} else if (robotMode == STATE_LINE_FOLLOWING) {
+				// Centrar ">>>MODO 2 - SEGUIMIENTO LINEA<<<"
+				// Primera línea: ">>>MODO 2<<<" (12 caracteres)
+				ssd1306_SetCursor((128 - 12 * 7) / 2, 20);
+				ssd1306_WriteString(">>>MODO 2<<<", Font_7x10, White);
+				// Segunda línea: "SEGUIMIENTO LINEA" (17 caracteres)
+				ssd1306_SetCursor((128 - 17 * 7) / 2, 34);
+				ssd1306_WriteString("SEGUIMIENTO LINEA", Font_7x10, White);
+			} else if (robotMode == STATE_DODGE) {
+				// Centrar ">>>MODO 3 - ESQUIVAR<<<"
+				// Primera línea: ">>>MODO 3<<<" (12 caracteres)
+				ssd1306_SetCursor((128 - 12 * 7) / 2, 20);
+				ssd1306_WriteString(">>>MODO 3<<<", Font_7x10, White);
+				// Segunda línea: "ESQUIVAR" (8 caracteres)
+				ssd1306_SetCursor((128 - 8 * 7) / 2, 34);
+				ssd1306_WriteString("ESQUIVAR", Font_7x10, White);
+			}
+
+			ssd1306_UpdateScreen();
+		}
+	}
 }
 
 /* USER CODE END 0 */
@@ -2342,6 +2686,7 @@ int main(void)
 
 	updateMefTask(&myButton);
 	buttonTask(&myButton);
+	HandleModeScreenTransition();
 
   }
   /* USER CODE END 3 */
@@ -2430,7 +2775,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -2613,7 +2958,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 71;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 9999;
+  htim2.Init.Period = 4999;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)

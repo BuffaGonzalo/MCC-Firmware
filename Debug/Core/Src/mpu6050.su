@@ -4,6 +4,6 @@
 ../Core/Src/mpu6050.c:34:6:mpu6050_WriteData	4	static
 ../Core/Src/mpu6050.c:39:6:mpu6050_ReadDataDMA	4	static
 ../Core/Src/mpu6050.c:45:6:mpu6050_Init	16	static
-../Core/Src/mpu6050.c:71:6:mpu6050_Reset_State	0	static
-../Core/Src/mpu6050.c:78:6:mpu6050_Read	8	static
-../Core/Src/mpu6050.c:107:6:mpu6050_GetData	16	static
+../Core/Src/mpu6050.c:76:6:mpu6050_Reset_State	0	static
+../Core/Src/mpu6050.c:83:6:mpu6050_Read	8	static
+../Core/Src/mpu6050.c:112:6:mpu6050_GetData	16	static
