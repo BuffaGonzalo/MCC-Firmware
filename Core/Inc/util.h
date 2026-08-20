@@ -88,8 +88,16 @@ typedef enum {
 
 	SETSTATICOFF = 0xC1,
 	SETMOVINGOFF = 0xC2,
+	SETTURNDIV = 0xC3,
+	SETLIMITANG = 0xC4,
+	SETPOINTSAVEMIN = 0xC5,
+	SETPOINTSAVEMAX = 0xC6,
+	SETVELDAMPDIV = 0xC7,
+	SETVELDAMPLIM = 0xC8,
+	SETTURNLIMIT = 0xC9,
 
 	ACK = 0x0D,
+	EXPORTIRCSV = 0xCA,  // Exportar datos IR al CSV: responde con ACK + número de exportación (2 bytes)
 	UNKNOWN = 0xFF
 } _eCmd;
 
@@ -123,6 +131,8 @@ typedef struct
     _eEvent         stateInput;
     uint8_t        isPressed;
     uint16_t        time;
+    uint8_t         clickCount;
+    uint8_t         justReleased;
 }_sButton;
 
 #endif /* INC_UTIL_H_ */

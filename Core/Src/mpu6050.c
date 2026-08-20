@@ -13,15 +13,6 @@ static uint8_t *mpu6050_RxCplt = NULL;
 static void (*memWrite)(uint8_t address, uint8_t *data, uint8_t size, uint8_t type) = NULL;
 static void (*memReadDMA)(uint8_t address, uint8_t *data, uint8_t size, uint8_t type) = NULL;
 
-// Variables convertidas a unidades físicas con escala ×100 (2 decimales fijos)
-int16_t ax_real; // Aceleración en X [centésimas de m/s²]
-int16_t ay_real;
-int16_t az_real;
-
-int16_t gx_real; // Velocidad angular en X [centésimas de grados/segundo]
-int16_t gy_real;
-int16_t gz_real;
-
 // Variables RAW leídas directamente del sensor (int16_t = complemento a dos)
 static int32_t ax, ay, az, gx, gy, gz;
 static uint8_t mpu_state = 1;
@@ -61,8 +52,8 @@ void mpu6050_Init(void)
     //HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, PWR_MGMT_1_REG, 1, &data, 1, HAL_MAX_DELAY);
     mpu6050_WriteData(&data, PWR_MGMT_1_REG);
 
-    // Habilitar el Digital Low Pass Filter (DLPF) a ~44Hz
-	data = 0x04;
+    // Habilitar el Digital Low Pass Filter (DLPF) a ~98Hz (modo 0x02) para cumplir el teorema de muestreo a 10ms (100Hz) con mínima latencia (2.8ms)
+	data = 0x03;
 	mpu6050_WriteData(&data, CONFIG_REG);
 
     // Configurar acelerómetro con rango ±2g (registro ACCEL_CONFIG = 0x1C, valor 0x00)

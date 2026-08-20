@@ -8,6 +8,10 @@ static uint8_t *SSD1306_TxCplt = NULL;
 static void (*memWrite)(uint8_t address, uint8_t *data, uint8_t size, uint8_t type) = NULL;
 static void (*memWriteDMA)(uint8_t address, uint8_t *data, uint8_t size, uint8_t type) = NULL;
 
+// Variables estáticas globales del archivo para controlar el estado del DMA
+static uint8_t ssd1306_dma_current_page = 0;
+static uint8_t ssd1306_dma_state = 1;
+
 #if defined(SSD1306_USE_I2C)
 
 void ssd1306_Reset(void) {
@@ -232,40 +236,46 @@ char ssd1306_UpdateScreenDMA(void) {
     //  * 64px   ==  8 pages
     //  * 128px  ==  16 pages
 
-	static uint8_t current_page = 0;
-	static uint8_t state = 1;
-
 	// Only proceed if I2C is ready or we're starting a new transaction
 
-	if (*SSD1306_TxCplt || state == 1) {
+	if (*SSD1306_TxCplt || ssd1306_dma_state == 1) {
 		*SSD1306_TxCplt = 0;  // Reset completion flag
 
-		switch (state) {
+		switch (ssd1306_dma_state) {
 		case 1:  // Set page address
-			ssd1306_WriteCommandDMA(0xB0 + current_page);
-			state = 2;
+			ssd1306_WriteCommandDMA(0xB0 + ssd1306_dma_current_page);
+			ssd1306_dma_state = 2;
 			break;
 		case 2:  // Set column address low nibble
 			ssd1306_WriteCommandDMA(0x00 + SSD1306_X_OFFSET_LOWER);
-			state = 3;
+			ssd1306_dma_state = 3;
 			break;
 		case 3:  // Set column address high nibble
 			ssd1306_WriteCommandDMA(0x10 + SSD1306_X_OFFSET_UPPER);
-			state = 4;
+			ssd1306_dma_state = 4;
 			break;
 		case 4:  // Write page data
-			ssd1306_WriteDataDMA(&SSD1306_Buffer[SSD1306_WIDTH*current_page],SSD1306_WIDTH);
-			current_page++;
-			state = 1;  // Start over with next page
+			ssd1306_WriteDataDMA(&SSD1306_Buffer[SSD1306_WIDTH*ssd1306_dma_current_page],SSD1306_WIDTH);
+			ssd1306_dma_current_page++;
+			ssd1306_dma_state = 1;  // Start over with next page
 
-			if (current_page > 7){//SSD1306_HEIGHT/8) {
-				current_page = 0;
+			if (ssd1306_dma_current_page > 7){//SSD1306_HEIGHT/8) {
+				ssd1306_dma_current_page = 0;
 				return 1;
 			}
 			break;
 		}
 	}
 	return 0;
+}
+
+/* Reiniciar el estado del DMA e I2C de la pantalla OLED */
+void ssd1306_ResetDMAState(void) {
+	ssd1306_dma_current_page = 0;
+	ssd1306_dma_state = 1;
+	if (SSD1306_TxCplt != NULL) {
+		*SSD1306_TxCplt = 1; // Forzar bandera de transmisión a "completado/listo"
+	}
 }
 
 /*

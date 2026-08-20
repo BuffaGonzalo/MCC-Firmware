@@ -44,7 +44,7 @@
 // ------------------------------------------------------
 
 // Gravedad terrestre en m/s²
-#define GRAVEDAD            9.81
+//#define GRAVEDAD            9.81
 
 // Factor de multiplicación para convertir a escala fija (2 decimales)
 #define MULTIPLICADORFLOAT  100  // Ejemplo: 9.81 × 100 = 981

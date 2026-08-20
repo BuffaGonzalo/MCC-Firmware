@@ -18,7 +18,6 @@
 
 #include "main.h"
 
-uint8_t isCommand = FALSE;
 uint8_t chk = 0;
 
 
