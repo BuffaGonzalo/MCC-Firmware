@@ -2136,47 +2136,42 @@ void PID_ControlTask(void) {
 
 		case DODGE_WALL_FOLLOWING: {
 			int16_t side_sensor = cal_ir2;
-			int16_t wall_end_threshold = (dodge_wall_count == 0) ? 250 : 100;
+			int16_t wall_end_threshold = 50; // Umbral de aire libre (50) para detectar fin real de pared
+			static uint32_t wall_lost_timer = 0;
 
-			if (dodge_wall_count == 0) {
-				// --- PARED 1 (Costado principal del objeto) ---
-				dodge_timer += DT_MS; // Temporizador de avance e inmunidad inicial (1000 ms)
+			dodge_timer += DT_MS; // Temporizador en seguimiento de pared
 
-				// Tras avanzar 1s y detectar que finalizó la pared (< 250), pasar a la espera de 2s
-				if (dodge_timer >= 1000 && side_sensor < wall_end_threshold) {
-					dodge_timer = 0;
-					dodge_yaw = 0;
-					dodgeState = DODGE_WALL1_WAIT; // Transición al estado explícito de espera de 2 segundos
+			// MEDIDA DE SEGURIDAD: Durante el primer segundo (1000 ms), queda PROHIBIDO cambiar de estado
+			if (dodge_timer < 1000) {
+				wall_lost_timer = 0;
+				target_setpoint = attack_setpoint;
+
+				int16_t wall_target = 1000;    // Setpoint de distancia deseada a la pared
+				int16_t wall_turn_limit = 250; // Límite de giro suave
+
+				int32_t wall_err = side_sensor - wall_target;
+				turn_offset = -(wall_err / 4);
+
+				if (turn_offset > wall_turn_limit)        turn_offset = wall_turn_limit;
+				else if (turn_offset < -wall_turn_limit)  turn_offset = -wall_turn_limit;
+			} else {
+				// Pasado el primer segundo de inmunidad obligatoria, evaluar posible fin de pared (< 50)
+				if (side_sensor < wall_end_threshold) {
+					wall_lost_timer += DT_MS;
+
+					if (wall_lost_timer >= 500) { // 500 ms sostenidos por debajo de 50
+						wall_lost_timer = 0;
+						dodge_timer = 0;
+						dodge_yaw = 0;
+						dodgeState = DODGE_WALL1_WAIT; // Pasar a la espera de 2s erguido (+350)
+					}
 				} else {
-					// Mientras detecte la pared (>= 250): Avanzar inclinado y seguir pared proporcionalmente
+					wall_lost_timer = 0;
 					target_setpoint = attack_setpoint;
 
 					int16_t wall_target = 1000;    // Setpoint de distancia deseada a la pared
 					int16_t wall_turn_limit = 250; // Límite de giro suave
 
-					int32_t wall_err = side_sensor - wall_target;
-					turn_offset = -(wall_err / 4);
-
-					if (turn_offset > wall_turn_limit)        turn_offset = wall_turn_limit;
-					else if (turn_offset < -wall_turn_limit)  turn_offset = -wall_turn_limit;
-				}
-			} else {
-				// --- PARED 2 (Cara posterior tras el giro de 45°) ---
-				dodge_timer += DT_MS; // Temporizador de inmunidad de la 2ª pared (2000 ms)
-
-				if (side_sensor < wall_end_threshold) {
-					if (dodge_timer >= 2000) { // 2s de inmunidad completados
-						dodge_timer = 0;
-						dodge_yaw = 0;
-						dodgeState = DODGE_CORNER_ROTATING; // Pasar al giro de 30°
-					} else {
-						target_setpoint = attack_setpoint;
-						turn_offset = 0;
-					}
-				} else {
-					target_setpoint = attack_setpoint;
-					int16_t wall_target = 1000;
-					int16_t wall_turn_limit = 250;
 					int32_t wall_err = side_sensor - wall_target;
 					turn_offset = -(wall_err / 4);
 
