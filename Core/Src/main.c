@@ -435,8 +435,11 @@ typedef enum {
     DODGE_PRE_ROTATE_WAIT, // Espera de 500ms erguido (-350) tras detectar la pared antes de rotar 90°
     DODGE_ROTATING_90,     // Rotación continua de 90° a la derecha sobre su propio eje
     DODGE_WALL_FOLLOWING,  // Avanzar siguiendo proporcionalmente la pared lateral izquierda (cal_ir2)
-    DODGE_WALL1_WAIT,      // Espera de 2 segundos erguido (+350) al finalizar la Pared 1 antes de rotar 45°
+    DODGE_WALL1_WAIT,      // Espera de 2 segundos erguido (+350) al finalizar la Pared 1
+    DODGE_CORNER_FORWARD,  // Avance hacia adelante de 500ms previo al giro de 45° para despejar el objeto
     DODGE_CORNER_ROTATING, // Rotación continua de 45°/30° a la izquierda sobre su propio eje
+    DODGE_ROTATE_10_RIGHT, // Rotación de 10° a la derecha tras detectar 1200 puntos a 45°
+    DODGE_ALIGN_WAIT,      // Espera parado en el lugar erguido (+350 setpoint) durante 2s tras alinearse
     DODGE_LINE_SEARCHING   // Avance hacia adelante buscando reconectarse a la línea
 } _eDodgeSubState;
 
@@ -2183,7 +2186,7 @@ void PID_ControlTask(void) {
 		break;
 
 		case DODGE_WALL1_WAIT:
-			// Modo de Espera Post-Pared 1: Esperar 2 segundos (2000 ms) erguido en setpoint +350 antes de iniciar el giro de 45°
+			// Modo de Espera Post-Pared 1: Esperar 2 segundos (2000 ms) erguido en setpoint +350 antes del avance previo al giro
 			target_setpoint = 350;
 			turn_offset = 0;
 			dodge_timer += DT_MS;
@@ -2191,7 +2194,20 @@ void PID_ControlTask(void) {
 			if (dodge_timer >= 2000) { // 2000 ms = 2 segundos completados
 				dodge_timer = 0;
 				dodge_yaw = 0;
-				dodgeState = DODGE_CORNER_ROTATING; // Pasar al estado de rotación de 45°
+				dodgeState = DODGE_CORNER_FORWARD; // Pasar al avance frontal previo de 500ms
+			}
+			break;
+
+		case DODGE_CORNER_FORWARD:
+			// Avance hacia adelante durante 500 ms para despejar el objeto antes de rotar 45°
+			target_setpoint = attack_setpoint;
+			turn_offset = 0;
+			dodge_timer += DT_MS;
+
+			if (dodge_timer >= 500) { // 500 ms de avance completados
+				dodge_timer = 0;
+				dodge_yaw = 0;
+				dodgeState = DODGE_CORNER_ROTATING; // Pasar a la rotación de 45° de la esquina
 			}
 			break;
 
@@ -2206,19 +2222,65 @@ void PID_ControlTask(void) {
 			int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
 			int32_t target_yaw = (dodge_wall_count == 0) ? 45000 : 30000; // 45° la 1ra vez, 30° la 2da vez
 
-			if (abs_yaw >= target_yaw) {
+			if (cal_ir0 >= 1200 || cal_ir4 >= 1200) {
+				// Al detectar 1200 puntos en el sensor a 45° de la esquina, conmutar a la rotación de 10° a la derecha
+				dodge_yaw = 0;
+				dodge_timer = 0;
+				dodgeState = DODGE_ROTATE_10_RIGHT;
+			} else if (abs_yaw >= target_yaw) {
 				turn_offset = 0;
 				dodge_yaw = 0;
 				dodge_timer = 0;
 				dodge_wall_count++;
 
 				if (dodge_wall_count < 2) {
-					dodgeState = DODGE_WALL_FOLLOWING; // Transición directa a Pared 2
+					dodgeState = DODGE_WALL_FOLLOWING; // Transición directa a seguimiento de Pared 2
 				} else {
 					dodgeState = DODGE_LINE_SEARCHING; // Transición directa a búsqueda de línea
 				}
 			} else {
 				turn_offset = -250 * dodge_direction; // Giro a la izquierda sobre el eje
+			}
+		}
+		break;
+
+		case DODGE_ROTATE_10_RIGHT: {
+			// Rotación de 10° (10,000 mdg) a la derecha sobre su propio eje tras la lectura de 1200 puntos
+			target_setpoint = 350;
+			integral = (integral * 9) / 10;
+
+			int32_t gz_calibrated = gz - gz_offset;
+			dodge_yaw += ((int64_t) gz_calibrated * DT_US) / 131000LL;
+
+			int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
+
+			if (abs_yaw >= 10000 || cal_ir2 < 800) { // 10.000 mdg (10°) a la derecha alcanzados o lectura lateral < 800
+				turn_offset = 0;
+				dodge_yaw = 0;
+				dodge_timer = 0;
+				dodgeState = DODGE_ALIGN_WAIT; // Transición a espera parado en el lugar erguido (+350)
+			} else {
+				turn_offset = 250 * dodge_direction; // Giro a la derecha sobre el eje
+			}
+		}
+		break;
+
+		case DODGE_ALIGN_WAIT: {
+			// Esperar parado en el lugar con setpoint +350 tras alinearse con la pared
+			target_setpoint = 350;
+			turn_offset = 0;
+			dodge_timer += DT_MS;
+
+			if (dodge_timer >= 2000) { // Espera de 2 segundos (2000 ms) completada
+				dodge_timer = 0;
+				dodge_yaw = 0;
+				dodge_wall_count++;
+
+				if (dodge_wall_count < 2) {
+					dodgeState = DODGE_WALL_FOLLOWING; // Iniciar seguimiento de pared 2
+				} else {
+					dodgeState = DODGE_LINE_SEARCHING; // Iniciar búsqueda de línea
+				}
 			}
 		}
 		break;
