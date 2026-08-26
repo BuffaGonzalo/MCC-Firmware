@@ -313,10 +313,10 @@ static uint8_t udpReadyToStart = 0;                   // Bandera que indica que 
 // //REDES
 // =========================================================
 static const _sWiFiNetwork knownNetworks[] = {
+	{ "POCOX8",    "12345678",                "10.44.55.213"   },
 	{ "FCAL-Personal", "fcal-uner+2019",       "172.22.237.227" },
 	{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.11"   },
 	{ "FCAL",    "fcalconcordia.06-2019",    "172.23.190.89"  },
-	{ "SA04",    "12345678",                "10.93.92.213"   },
 	{ "InternetPlus_872f10_EXT", "wlan78d0ef", "192.168.1.52" },
 };                                                    // Base de datos local de redes Wi-Fi a las cuales autoconectarse
 
@@ -2146,7 +2146,7 @@ void PID_ControlTask(void) {
 				wall_lost_timer = 0;
 				target_setpoint = attack_setpoint;
 
-				int16_t wall_target = 1000;    // Setpoint de distancia deseada a la pared
+				int16_t wall_target = 800;     // Setpoint de distancia deseada a la pared
 				int16_t wall_turn_limit = 250; // Límite de giro suave
 
 				int32_t wall_err = side_sensor - wall_target;
@@ -2169,7 +2169,7 @@ void PID_ControlTask(void) {
 					wall_lost_timer = 0;
 					target_setpoint = attack_setpoint;
 
-					int16_t wall_target = 1000;    // Setpoint de distancia deseada a la pared
+					int16_t wall_target = 800;     // Setpoint de distancia deseada a la pared
 					int16_t wall_turn_limit = 250; // Límite de giro suave
 
 					int32_t wall_err = side_sensor - wall_target;
