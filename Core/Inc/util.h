@@ -96,6 +96,9 @@ typedef enum {
 	SETVELDAMPLIM = 0xC8,
 	SETTURNLIMIT = 0xC9,
 
+	SETWALLKP = 0xCB,
+	SETWALLKD = 0xCC,
+
 	ACK = 0x0D,
 	EXPORTIRCSV = 0xCA,  // Exportar datos IR al CSV: responde con ACK + número de exportación (2 bytes)
 	UNKNOWN = 0xFF

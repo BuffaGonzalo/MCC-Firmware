@@ -313,7 +313,7 @@ static uint8_t udpReadyToStart = 0;                   // Bandera que indica que 
 // //REDES
 // =========================================================
 static const _sWiFiNetwork knownNetworks[] = {
-	{ "POCOX8",    "12345678",                "10.44.55.213"   },
+	{ "POCOX8",    "12345678",                "10.90.109.213"   },
 	{ "FCAL-Personal", "fcal-uner+2019",       "172.22.237.227" },
 	{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.11"   },
 	{ "FCAL",    "fcalconcordia.06-2019",    "172.23.190.89"  },
@@ -423,6 +423,8 @@ uint8_t line_lost_phase = 0;                          // Fase de búsqueda secue
 uint16_t obs_detect_dist = 1000;                      // Distancia frontal de detección en mm
 uint16_t obs_corner_dist = 800;                       // Distancia lateral del sensor de 45° para validar esquina
 uint16_t obs_lost_dist = 400;                         // Distancia mínima lateral por debajo de la cual la pared terminó
+int32_t Kp_pared = 20;                                // Fuerza principal para mantener distancia lateral (90°)
+int32_t Kd_anticipo = 5;                              // Fuerza menor de ayuda/anticipación anticipada (45°)
 uint16_t obs_side_dist = 1000;                        // Distancia lateral de referencia deseada para seguir la pared
 uint16_t obs_stop_cycles = 10;                        // Ciclos de inmovilización previa antes de iniciar rotación evasiva
 uint16_t obs_align_dist = 2500;                       // Distancia objetivo del sensor lateral tras rotación de 90°
@@ -430,20 +432,17 @@ uint16_t obs_align_dist = 2500;                       // Distancia objetivo del 
 // =========================================================
 // //DODGE ROTATION
 // =========================================================
+// =========================================================
+// //DODGE ROTATION
+// =========================================================
 typedef enum {
-    DODGE_LINE_FOLLOWING,  // Seguimiento de línea normal monitoreando IR6
-    DODGE_PRE_ROTATE_WAIT, // Espera de 500ms erguido (-350) tras detectar la pared antes de rotar 90°
-    DODGE_ROTATING_90,     // Rotación continua de 90° a la derecha sobre su propio eje
-    DODGE_WALL_FOLLOWING,  // Avanzar siguiendo proporcionalmente la pared lateral izquierda (cal_ir2)
-    DODGE_WALL1_WAIT,      // Espera de 2 segundos erguido (+350) al finalizar la Pared 1
-    DODGE_CORNER_FORWARD,  // Avance hacia adelante de 500ms previo al giro de 45° para despejar el objeto
-    DODGE_CORNER_ROTATING, // Rotación continua de 45°/30° a la izquierda sobre su propio eje
-    DODGE_ROTATE_10_RIGHT, // Rotación de 10° a la derecha tras detectar 1200 puntos a 45°
-    DODGE_ALIGN_WAIT,      // Espera parado en el lugar erguido (+350 setpoint) durante 2s tras alinearse
-    DODGE_LINE_SEARCHING   // Avance hacia adelante buscando reconectarse a la línea
+    DODGE_LINE_FOLLOWING,  // Seguimiento de línea con rampa de desaceleración
+    DODGE_ROTATING,        // Espera de 1s integrada + Rotación de 90° con giroscopio
+    DODGE_WALL_FOLLOWING   // Evasión PD continua y retorno a la pista
 } _eDodgeSubState;
 
-volatile _eDodgeSubState dodgeState = DODGE_LINE_FOLLOWING;
+
+volatile _eDodgeSubState dodgeState = DODGE_LINE_FOLLOWING; // Inicia en seguimiento de línea con esquivado activo
 volatile int32_t dodge_yaw = 0;
 volatile int32_t dodge_step_target_yaw = 2000; // Micro-paso inicial de 2.0° (2,000 mdeg)
 volatile uint32_t dodge_timer = 0;
@@ -1002,6 +1001,22 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
 		Kp_ext = myWord.i16[0];
+		break;
+	case SETWALLKP:
+		unerPrtcl_PutHeaderOnTx(dataTx, SETWALLKP, 2);
+		unerPrtcl_PutByteOnTx(dataTx, ACK);
+		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
+		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
+		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
+		Kp_pared = myWord.i16[0];
+		break;
+	case SETWALLKD:
+		unerPrtcl_PutHeaderOnTx(dataTx, SETWALLKD, 2);
+		unerPrtcl_PutByteOnTx(dataTx, ACK);
+		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
+		myWord.ui8[0] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
+		myWord.ui8[1] = unerPrtcl_GetByteFromRx(dataRx, 1, 0);
+		Kd_anticipo = myWord.i16[0];
 		break;
 	case SETLIMITANG:
 		unerPrtcl_PutHeaderOnTx(dataTx, SETLIMITANG, 2);
@@ -1760,7 +1775,7 @@ void buttonTask(_sButton *button) {
 				break;
 			case 3:
 				robotMode = STATE_DODGE;
-				dodgeState = DODGE_LINE_FOLLOWING;
+				dodgeState = DODGE_LINE_FOLLOWING; // Inicia en seguimiento de línea
 				hbIndex = 2; // LED Dodge (3 parpadeos)
 
 				// Restaurar ganancias de seguimiento de línea si venían de estar en 0 (Swing)
@@ -1982,7 +1997,7 @@ void PID_ControlTask(void) {
 
 	// Variables estáticas persistentes de estado
 	static int32_t last_angle = 0;
-	static int8_t dodge_direction = 1;
+	static int8_t dodge_direction = -1; // -1: Rotación inicial a la DERECHA
 
 	measured_dt_ms = DT_MS;
 
@@ -2056,11 +2071,6 @@ void PID_ControlTask(void) {
 	int32_t target_setpoint = setpoint; 
 	turn_offset = 0;
 
-	uint8_t ir1_active = (left_ir < IR_WHITE);
-	uint8_t ir3_active = (center_ir < IR_WHITE);
-	uint8_t ir5_active = (right_ir < IR_WHITE);
-	uint8_t active_count = ir1_active + ir3_active + ir5_active;
-
 	switch (robotMode) {
 	case STATE_SWING:
 		// --- MODO 1: BALANCEO ESTÁTICO ---
@@ -2074,231 +2084,118 @@ void PID_ControlTask(void) {
 		break;
 
 	case STATE_DODGE:
-		// --- MODO 3: ESQUIVADO DE OBSTÁCULOS OPTIMIZADO (MEF MINIMALISTA) ---
+		// Variables estáticas locales para el control PD de pared
+		static uint16_t dodge_blind_timer = 0;
+
 		switch (dodgeState) {
 		case DODGE_LINE_FOLLOWING:
-			// 1. Seguimiento de línea normal mientras monitorea el sensor frontal IR6
+			// 1. Seguimiento de línea y rampa de desaceleración frontal
 			LineFollowingMEF(left_ir, center_ir, right_ir, &target_setpoint);
 
-			// Frenado ultra-agresivo al aproximarse al objeto (cal_ir6 aumenta de 50 a 300)
 			if (cal_ir6 > 50) {
 				int16_t ir_val = (cal_ir6 > 300) ? 300 : cal_ir6;
-				// Rampa lineal acelerada desde attack_setpoint (en IR=50) hasta +800 (en IR=300)
+				// Rampa lineal desde attack_setpoint hasta +800
 				int32_t ramp_setpoint = attack_setpoint + ((800 - (int32_t)attack_setpoint) * (ir_val - 50)) / 250;
 				target_setpoint = ramp_setpoint;
 
-				// Reducción drástica del desplazamiento lateral
-				int32_t scale_factor = 300 - ir_val; // de 250 a 0
+				// Reducción del desplazamiento lateral
+				int32_t scale_factor = 300 - ir_val;
 				turn_offset = (turn_offset * scale_factor) / 250;
 			}
 
-			// Al alcanzar el umbral de detección frontal (>= 300), fijar setpoint agresivo en +800 y pasar a espera previa
 			if (cal_ir6 >= 300) {
 				target_setpoint = 800;
 				turn_offset = 0;
 				dodge_yaw = 0;
-				dodge_timer = 0;
-				dodge_wall_count = 0;
-				dodgeState = DODGE_PRE_ROTATE_WAIT; // Transición a espera previa de 500ms
+				dodge_timer = 0; // Reinicio vital para la espera interna
+				dodgeState = DODGE_ROTATING;
 			}
 			break;
 
-		case DODGE_PRE_ROTATE_WAIT:
-			// Modo de Espera Pre-Giro: Esperar 500 ms frenado con inclinación ultra-agresiva (+800) antes de iniciar la rotación de 90°
-			target_setpoint = 800;
-			turn_offset = 0;
+		case DODGE_ROTATING:
+			// 2. Estado Unificado: Espera de 1 segundo + Rotación 90°
 			dodge_timer += DT_MS;
 
-			if (dodge_timer >= 500) { // 500 ms = 0.5 segundos completados
-				dodge_timer = 0;
-				dodge_yaw = 0;
-				dodgeState = DODGE_ROTATING_90; // Pasar al estado de rotación de 90°
+			if (dodge_timer < 1000) {
+				// --- FASE INTERNA 1: ESPERA (1000 ms) ---
+				turn_offset = 0;
+
+				// Clava frenos los primeros 500ms, luego se estabiliza a +350
+				if (dodge_timer < 500) {
+					target_setpoint = 800;
+				} else {
+					target_setpoint = 350;
+				}
+			}
+			else {
+				// --- FASE INTERNA 2: ROTACIÓN DE 90° ---
+				target_setpoint = 350; // Inclinación de balanceo erguido (+350) durante la rotación
+				integral = (integral * 7) / 10; // Atenuación de memoria inercial
+
+				int32_t gz_calibrated = gz - gz_offset;
+				dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
+				int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
+
+				if (abs_yaw >= 90000) { // Fin de giro (90°)
+					turn_offset = 0;
+					dodge_yaw = 0;
+					dodge_timer = 0;
+					dodge_blind_timer = 0;
+					dodgeState = DODGE_WALL_FOLLOWING;
+				} else {
+					// Prioridad de balanceo dinámica
+					int32_t base_turn = 250;
+					int32_t abs_error = (error < 0) ? -error : error;
+
+					if (abs_error > 250) {
+						turn_offset = 0;
+						integral = 0;
+					} else {
+						turn_offset = base_turn * dodge_direction;
+					}
+				}
 			}
 			break;
 
-		case DODGE_ROTATING_90: {
-			// 2. Rotación continua de 90° a la derecha sobre su propio eje manteniendo setpoint (-350)
-			target_setpoint = -350;
-			integral = (integral * 9) / 10;
-
-			int32_t gz_calibrated = gz - gz_offset;
-			dodge_yaw += ((int64_t) gz_calibrated * DT_US) / 131000LL;
-
-			int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
-
-			if (abs_yaw >= 90000) { // 90.000° alcanzados
-				turn_offset = 0;
-				dodge_yaw = 0;
-				dodge_timer = 0;
-				dodgeState = DODGE_WALL_FOLLOWING; // Transición activa a seguimiento de Pared 1
-			} else {
-				turn_offset = -250 * dodge_direction; // Giro a la derecha en el mezclador de velocidades
-			}
-		}
-		break;
-
 		case DODGE_WALL_FOLLOWING: {
-			int16_t side_sensor = cal_ir2;
-			int16_t wall_end_threshold = 50; // Umbral de aire libre (50) para detectar fin real de pared
-			static uint32_t wall_lost_timer = 0;
-
-			dodge_timer += DT_MS; // Temporizador en seguimiento de pared
-
-			// MEDIDA DE SEGURIDAD: Durante el primer segundo (1000 ms), queda PROHIBIDO cambiar de estado
-			if (dodge_timer < 1000) {
-				wall_lost_timer = 0;
-				target_setpoint = attack_setpoint;
-
-				int16_t wall_target = 800;     // Setpoint de distancia deseada a la pared
-				int16_t wall_turn_limit = 250; // Límite de giro suave
-
-				int32_t wall_err = side_sensor - wall_target;
-				turn_offset = -(wall_err / 4);
-
-				if (turn_offset > wall_turn_limit)        turn_offset = wall_turn_limit;
-				else if (turn_offset < -wall_turn_limit)  turn_offset = -wall_turn_limit;
-			} else {
-				// Pasado el primer segundo de inmunidad obligatoria, evaluar posible fin de pared (< 50)
-				if (side_sensor < wall_end_threshold) {
-					wall_lost_timer += DT_MS;
-
-					if (wall_lost_timer >= 500) { // 500 ms sostenidos por debajo de 50
-						wall_lost_timer = 0;
-						dodge_timer = 0;
-						dodge_yaw = 0;
-						dodgeState = DODGE_WALL1_WAIT; // Pasar a la espera de 2s erguido (+350)
-					}
-				} else {
-					wall_lost_timer = 0;
 					target_setpoint = attack_setpoint;
 
-					int16_t wall_target = 800;     // Setpoint de distancia deseada a la pared
-					int16_t wall_turn_limit = 250; // Límite de giro suave
+					// Sensores de pared: 90° para control principal de distancia, 45° para anticipación anticipada
+					int16_t sensor_90 = (dodge_direction == 1) ? cal_ir0 : cal_ir2;
+					int16_t sensor_45 = (dodge_direction == 1) ? cal_ir7 : cal_ir4;
 
-					int32_t wall_err = side_sensor - wall_target;
-					turn_offset = -(wall_err / 4);
+					// Distancia objetivo principal a la pared
+					int16_t wall_target = 800;
+
+					// 1. Error de distancia del sensor lateral 90° (Control Principal)
+					int32_t error_distancia = sensor_90 - wall_target;
+
+					// 2. Error de anticipación del sensor diagonal 45° (Ayuda anticipada)
+					int32_t error_anticipo = sensor_45 - wall_target;
+
+					// Seguimiento PD normal de pared
+					int32_t calculo_pd = ((error_distancia * Kp_pared) + (error_anticipo * Kd_anticipo)) / 100;
+
+					turn_offset = calculo_pd * dodge_direction;
+
+					int16_t wall_turn_limit = 200;
 
 					if (turn_offset > wall_turn_limit)        turn_offset = wall_turn_limit;
 					else if (turn_offset < -wall_turn_limit)  turn_offset = -wall_turn_limit;
+
+					dodge_blind_timer++;
+					if (dodge_blind_timer >= 100) { // 100 ciclos x 5ms = 500ms ciego tras rotar en el lugar
+						if (center_ir < IR_WHITE || left_ir < IR_WHITE || right_ir < IR_WHITE) {
+							turn_offset = 0;
+							lineState = LINE_FOLLOWING;
+							dodgeState = DODGE_LINE_FOLLOWING;
+						}
+					}
+					break;
 				}
-			}
-		}
-		break;
-
-		case DODGE_WALL1_WAIT:
-			// Modo de Espera Post-Pared 1: Esperar 2 segundos (2000 ms) erguido en setpoint +350 antes del avance previo al giro
-			target_setpoint = 350;
-			turn_offset = 0;
-			dodge_timer += DT_MS;
-
-			if (dodge_timer >= 2000) { // 2000 ms = 2 segundos completados
-				dodge_timer = 0;
-				dodge_yaw = 0;
-				dodgeState = DODGE_CORNER_FORWARD; // Pasar al avance frontal previo de 500ms
-			}
-			break;
-
-		case DODGE_CORNER_FORWARD:
-			// Avance hacia adelante durante 500 ms para despejar el objeto antes de rotar 45°
-			target_setpoint = attack_setpoint;
-			turn_offset = 0;
-			dodge_timer += DT_MS;
-
-			if (dodge_timer >= 500) { // 500 ms de avance completados
-				dodge_timer = 0;
-				dodge_yaw = 0;
-				dodgeState = DODGE_CORNER_ROTATING; // Pasar a la rotación de 45° de la esquina
-			}
-			break;
-
-		case DODGE_CORNER_ROTATING: {
-			// 4. Rotación continua sobre su propio eje a la izquierda manteniendo setpoint (+350)
-			target_setpoint = 350;
-			integral = (integral * 9) / 10;
-
-			int32_t gz_calibrated = gz - gz_offset;
-			dodge_yaw += ((int64_t) gz_calibrated * DT_US) / 131000LL;
-
-			int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
-			int32_t target_yaw = (dodge_wall_count == 0) ? 45000 : 30000; // 45° la 1ra vez, 30° la 2da vez
-
-			if (cal_ir0 >= 1200 || cal_ir4 >= 1200) {
-				// Al detectar 1200 puntos en el sensor a 45° de la esquina, conmutar a la rotación de 10° a la derecha
-				dodge_yaw = 0;
-				dodge_timer = 0;
-				dodgeState = DODGE_ROTATE_10_RIGHT;
-			} else if (abs_yaw >= target_yaw) {
-				turn_offset = 0;
-				dodge_yaw = 0;
-				dodge_timer = 0;
-				dodge_wall_count++;
-
-				if (dodge_wall_count < 2) {
-					dodgeState = DODGE_WALL_FOLLOWING; // Transición directa a seguimiento de Pared 2
-				} else {
-					dodgeState = DODGE_LINE_SEARCHING; // Transición directa a búsqueda de línea
-				}
-			} else {
-				turn_offset = -250 * dodge_direction; // Giro a la izquierda sobre el eje
-			}
-		}
-		break;
-
-		case DODGE_ROTATE_10_RIGHT: {
-			// Rotación de 10° (10,000 mdg) a la derecha sobre su propio eje tras la lectura de 1200 puntos
-			target_setpoint = 350;
-			integral = (integral * 9) / 10;
-
-			int32_t gz_calibrated = gz - gz_offset;
-			dodge_yaw += ((int64_t) gz_calibrated * DT_US) / 131000LL;
-
-			int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
-
-			if (abs_yaw >= 10000 || cal_ir2 < 800) { // 10.000 mdg (10°) a la derecha alcanzados o lectura lateral < 800
-				turn_offset = 0;
-				dodge_yaw = 0;
-				dodge_timer = 0;
-				dodgeState = DODGE_ALIGN_WAIT; // Transición a espera parado en el lugar erguido (+350)
-			} else {
-				turn_offset = 250 * dodge_direction; // Giro a la derecha sobre el eje
-			}
-		}
-		break;
-
-		case DODGE_ALIGN_WAIT: {
-			// Esperar parado en el lugar con setpoint +350 tras alinearse con la pared
-			target_setpoint = 350;
-			turn_offset = 0;
-			dodge_timer += DT_MS;
-
-			if (dodge_timer >= 2000) { // Espera de 2 segundos (2000 ms) completada
-				dodge_timer = 0;
-				dodge_yaw = 0;
-				dodge_wall_count++;
-
-				if (dodge_wall_count < 2) {
-					dodgeState = DODGE_WALL_FOLLOWING; // Iniciar seguimiento de pared 2
-				} else {
-					dodgeState = DODGE_LINE_SEARCHING; // Iniciar búsqueda de línea
-				}
-			}
-		}
-		break;
-
-		case DODGE_LINE_SEARCHING:
-			// 5. Avance frontal buscando la línea tras la última rotación (ÚNICA ETAPA DONDE SE BUSCA LÍNEA)
-			target_setpoint = attack_setpoint;
-			turn_offset = 0;
-
-			// Detectar la línea negra tras completar la última rotación
-			if (center_ir >= 500 || left_ir >= 500 || right_ir >= 500) {
-				lineState = LINE_FOLLOWING;
-				dodgeState = DODGE_LINE_FOLLOWING; // Volver a seguimiento de línea normal
-			}
-			break;
 
 		default:
-			dodgeState = DODGE_LINE_FOLLOWING;
+			dodgeState = DODGE_WALL_FOLLOWING;
 			break;
 		}
 		break;
