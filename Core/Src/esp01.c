@@ -27,8 +27,11 @@ static enum {
 	ESP01ATCIPMUX,
 	ESP01CIPMUXRESPONSE,
 	ESP01ATCWSAP,        /* Nuevo: configura SoftAP */
+	ESP01CWSAPRESPONSE,  /* Respuesta AT+CWSAP_CUR */
 	ESP01ATCWDHCP,       /* Nuevo: habilita DHCP del AP */
+	ESP01CWDHCPRESPONSE, /* Respuesta AT+CWDHCP_CUR */
 	ESP01ATCIPSERVER,    /* Nuevo: inicia servidor HTTP puerto 80 */
+	ESP01CIPSERVERRESPONSE, /* Respuesta AT+CIPSERVER */
 	ESP01ATCWJAP,
 	ESP01CWJAPRESPONSE,
 	ESP01ATCIFSR,
@@ -528,7 +531,10 @@ static void ESP01ATDecode(){
 					if (esp01ATSate == ESP01ATRESPONSE
 							|| esp01ATSate == ESP01CWMODERESPONSE
 							|| esp01ATSate == ESP01CWAUTOCONNRESPONSE
-							|| esp01ATSate == ESP01CIPMUXRESPONSE) {
+							|| esp01ATSate == ESP01CIPMUXRESPONSE
+							|| esp01ATSate == ESP01CWSAPRESPONSE
+							|| esp01ATSate == ESP01CWDHCPRESPONSE
+							|| esp01ATSate == ESP01CIPSERVERRESPONSE) {
 						esp01TimeoutTask = 0;
 						esp01Flags.bit.ATRESPONSEOK = 1;
 					}
@@ -579,6 +585,13 @@ static void ESP01ATDecode(){
 				case 9://SEND OK
 					esp01Flags.bit.SENDINGDATA = 0;
 					esp01TimeoutSendOk = 0;
+					if(esp01WebServerMode){
+						char connStr[4];
+						itoa(esp01LastConnID, connStr, 10);
+						ESP01StrToBufTX("AT+CIPCLOSE=");
+						ESP01StrToBufTX(connStr);
+						ESP01StrToBufTX("\r\n");
+					}
 					if(ESP01ChangeState != NULL)
 						ESP01ChangeState(ESP01_SEND_OK);
 					break;
@@ -839,21 +852,45 @@ static void ESP01DOConnection(){
 		ESP01ByteToBufTX('\n');
 		if(ESP01DbgStr != NULL)
 			ESP01DbgStr("+&DBGESP01ATCWSAP\n");
-		esp01ATSate = ESP01ATCWDHCP;
+		esp01Flags.bit.ATRESPONSEOK = 0;
+		esp01ATSate = ESP01CWSAPRESPONSE;
+		esp01TimeoutTask = 300;
+		break;
+	case ESP01CWSAPRESPONSE:
+		if(esp01Flags.bit.ATRESPONSEOK)
+			esp01ATSate = ESP01ATCWDHCP;
+		else
+			esp01ATSate = ESP01ATAT;
 		break;
 	case ESP01ATCWDHCP:
 		/* AT+CWDHCP_CUR=2,1  →  habilita DHCP del SoftAP */
 		ESP01StrToBufTX(ATCWDHCP);
 		if(ESP01DbgStr != NULL)
 			ESP01DbgStr("+&DBGESP01ATCWDHCP\n");
-		esp01ATSate = ESP01ATCIPSERVER;
+		esp01Flags.bit.ATRESPONSEOK = 0;
+		esp01ATSate = ESP01CWDHCPRESPONSE;
+		esp01TimeoutTask = 200;
+		break;
+	case ESP01CWDHCPRESPONSE:
+		if(esp01Flags.bit.ATRESPONSEOK)
+			esp01ATSate = ESP01ATCIPSERVER;
+		else
+			esp01ATSate = ESP01ATAT;
 		break;
 	case ESP01ATCIPSERVER:
 		/* AT+CIPSERVER=1,80  →  inicia servidor TCP en puerto 80 */
 		ESP01StrToBufTX(ATCIPSERVER);
 		if(ESP01DbgStr != NULL)
 			ESP01DbgStr("+&DBGESP01ATCIPSERVER\n");
-		esp01ATSate = ESP01ATCONNECTED;
+		esp01Flags.bit.ATRESPONSEOK = 0;
+		esp01ATSate = ESP01CIPSERVERRESPONSE;
+		esp01TimeoutTask = 200;
+		break;
+	case ESP01CIPSERVERRESPONSE:
+		if(esp01Flags.bit.ATRESPONSEOK)
+			esp01ATSate = ESP01ATCONNECTED;
+		else
+			esp01ATSate = ESP01ATAT;
 		break;
 	/* ---- FIN NUEVOS ESTADOS ---- */
 	case ESP01ATCWJAP:

@@ -304,7 +304,7 @@ _sButton myButton;                                    // Estructura de estado f�
 static char httpBuf[HTTP_BUF_SIZE];                   // Buffer para acumular el request del servidor web local
 static uint8_t httpBufIdx = 0;                        // Índice actual en el buffer HTTP (0xFF indica petición lista)
 static uint8_t isWebserverMode = 0;                   // Estado bandera del modo Webserver activo (1 = activo, 0 = inactivo)
-static uint8_t httpTxBuf[340];                        // Buffer de transmisión compartido para respuestas HTML
+static uint8_t httpTxBuf[2048];                       // Buffer de transmisión compartido para respuestas HTML y JSON
 static char udpTargetIP[16] = "192.168.0.10";         // Dirección IP de destino UDP para envío de telemetría
 static uint16_t udpTargetPort = 30010;                // Puerto de destino UDP de la aplicación de escritorio
 static uint8_t udpReadyToStart = 0;                   // Bandera que indica que el socket UDP está listo para despachar
@@ -444,6 +444,7 @@ typedef enum {
 
 volatile _eDodgeSubState dodgeState = DODGE_LINE_FOLLOWING; // Inicia en seguimiento de línea con esquivado activo
 volatile int32_t dodge_yaw = 0;
+volatile int32_t total_yaw_hr = 0;                    // Ángulo Yaw total acumulado continuo en milígrados
 volatile int32_t dodge_step_target_yaw = 2000; // Micro-paso inicial de 2.0° (2,000 mdeg)
 volatile uint32_t dodge_timer = 0;
 volatile uint8_t dodge_wall_count = 0;
@@ -503,8 +504,9 @@ void buttonTask();
 void buttonTimeout10ms(_sButton *button);
 
 /* ---- WEBSERVER ---- */
-void sendHTMLForm(uint8_t connID);
-void sendHTTPOKPage(uint8_t connID);
+_eESP01STATUS sendJSONTelemetry(uint8_t connID);
+_eESP01STATUS sendHTMLForm(uint8_t connID);
+_eESP01STATUS sendHTTPOKPage(uint8_t connID);
 void parseHTTPGetParams(const char *httpReq, char *ssid, char *pass, char *ip, uint16_t *port);
 void httpTask(void);
 void OnESP01ChangeState(_eESP01STATUS state);
@@ -1465,32 +1467,112 @@ void WiFi_Data_Callback(uint8_t byte)
     }
 }
 
-/* ============================================================
- *  WEBSERVER - Funciones HTTP
- * ============================================================ */
+static void format_pitch_deg(char *out, size_t maxlen, int32_t pitch_hr) {
+    int32_t abs_val = (pitch_hr < 0) ? -pitch_hr : pitch_hr;
+    int32_t integer_part = abs_val / 10000;
+    int32_t frac_part = (abs_val % 10000) / 100;
+    snprintf(out, maxlen, "%s%ld.%02ld", (pitch_hr < 0 && (integer_part != 0 || frac_part != 0)) ? "-" : "", (long)integer_part, (long)frac_part);
+}
+
+static void format_yaw_deg(char *out, size_t maxlen, int32_t yaw_hr) {
+    int32_t abs_val = (yaw_hr < 0) ? -yaw_hr : yaw_hr;
+    int32_t integer_part = abs_val / 1000;
+    int32_t frac_part = (abs_val % 1000) / 10;
+    snprintf(out, maxlen, "%s%ld.%02ld", (yaw_hr < 0 && (integer_part != 0 || frac_part != 0)) ? "-" : "", (long)integer_part, (long)frac_part);
+}
+
 /**
- * @brief Envia el formulario HTML con campos SSID, PASS, IP y Puerto
+ * @brief Envia telemetria en formato JSON para auto-refresh del dashboard
  */
-void sendHTMLForm(uint8_t connID)
+_eESP01STATUS sendJSONTelemetry(uint8_t connID)
 {
+    char strPitch[16] = {0};
+    char strYaw[16]   = {0};
+
+    format_pitch_deg(strPitch, sizeof(strPitch), current_angle_hr);
+    format_yaw_deg(strYaw, sizeof(strYaw), total_yaw_hr);
+
+    const char *header = "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n";
+
+    uint16_t len = (uint16_t)snprintf((char*)httpTxBuf, sizeof(httpTxBuf),
+        "%s{\"irl\":%d,\"irc\":%d,\"irr\":%d,\"d0\":%d,\"d2\":%d,\"d4\":%d,\"d6\":%d,\"d7\":%d,\"ax\":%d,\"ay\":%d,\"az\":%d,\"gx\":%d,\"gy\":%d,\"gz\":%d,\"pitch\":%s,\"yaw\":%s}",
+        header,
+        cal_left_ir, cal_center_ir, cal_right_ir,
+        cal_ir0, cal_ir2, cal_ir4, cal_ir6, cal_ir7,
+        ax, ay, az, gx, gy, gz,
+        strPitch, strYaw);
+
+    return ESP01_Send(connID, httpTxBuf, 0, len, sizeof(httpTxBuf));
+}
+
+/**
+ * @brief Envia el Dashboard HTML con telemetria en vivo y formulario de configuracion Wi-Fi
+ */
+_eESP01STATUS sendHTMLForm(uint8_t connID)
+{
+    char strPitch[16] = {0};
+    char strYaw[16]   = {0};
+
+    format_pitch_deg(strPitch, sizeof(strPitch), current_angle_hr);
+    format_yaw_deg(strYaw, sizeof(strYaw), total_yaw_hr);
+
     const char *header = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n";
-    const char *body   = "<!DOCTYPE html><html><body>"
-                         "<form action=/set method=GET>"
-                         "SSID:<input name=ssid><br>"
-                         "PASS:<input name=pass type=password><br>"
-                         "IP PC:<input name=ip value=192.168.0.1><br>"
-                         "Puerto:<input name=port value=30010><br>"
-                         "<input type=submit value=Conectar>"
-                         "</form></body></html>";
+    
+    static char body[1850];
+    snprintf(body, sizeof(body),
+        "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<style>"
+        "body{font-family:sans-serif;background:#181818;color:#fff;margin:8px}"
+        "h4{color:#00e676;margin:4px 0}"
+        "div{background:#222;padding:6px;margin:4px 0;border-radius:4px}"
+        "span{font-weight:bold;color:#40c4ff}"
+        "input{width:90%%;padding:4px;margin:2px 0;background:#333;color:#fff;border:1px solid #555}"
+        "</style></head><body>"
+        "<h4>TELEMETRIA ROBOT</h4>"
+        "<div>IR L/C/R: <span id=\"ir\">%d / %d / %d</span></div>"
+        "<div>Dist. Frontal: <span id=\"df\">%d</span></div>"
+        "<div>Dist. Lat (L90/L45/R90/R45): <span id=\"dl\">%d / %d / %d / %d</span></div>"
+        "<div>Pitch / Yaw: <span id=\"att\">%s&deg; / %s&deg;</span></div>"
+        "<div>Acel X/Y/Z: <span id=\"acc\">%d,%d,%d</span></div>"
+        "<div>Giro X/Y/Z: <span id=\"gyr\">%d,%d,%d</span></div>"
+        "<form action=/set method=GET>"
+        "<h4>CONECTAR A ROUTER</h4>"
+        "SSID: <input name=ssid required><br>"
+        "Pass: <input name=pass type=password><br>"
+        "IP PC: <input name=ip value=192.168.0.10><br>"
+        "Puerto: <input name=port value=30010><br>"
+        "<input type=submit value=\"Conectar\" style=\"background:#00e676;color:#000;font-weight:bold\">"
+        "</form>"
+        "<script>"
+        "let b=false;"
+        "function u(){"
+        "if(b)return;b=true;"
+        "fetch('/data').then(r=>r.json()).then(d=>{"
+        "document.getElementById('ir').innerText=d.irl+' / '+d.irc+' / '+d.irr;"
+        "document.getElementById('df').innerText=d.d6;"
+        "document.getElementById('dl').innerText=d.d2+' / '+d.d4+' / '+d.d0+' / '+d.d7;"
+        "document.getElementById('att').innerText=d.pitch+'&deg; / '+d.yaw+'&deg;';"
+        "document.getElementById('acc').innerText=d.ax+','+d.ay+','+d.az;"
+        "document.getElementById('gyr').innerText=d.gx+','+d.gy+','+d.gz;"
+        "}).catch(e=>{}).finally(()=>{b=false;});"
+        "}"
+        "setTimeout(()=>{setInterval(u,1000);},1000);"
+        "</script></body></html>",
+        cal_left_ir, cal_center_ir, cal_right_ir,
+        cal_ir6,
+        cal_ir2, cal_ir4, cal_ir0, cal_ir7,
+        strPitch, strYaw,
+        ax, ay, az,
+        gx, gy, gz);
 
     uint16_t len = (uint16_t)snprintf((char*)httpTxBuf, sizeof(httpTxBuf), "%s%s", header, body);
-    ESP01_Send(connID, httpTxBuf, 0, len, sizeof(httpTxBuf));
+    return ESP01_Send(connID, httpTxBuf, 0, len, sizeof(httpTxBuf));
 }
 
 /**
  * @brief Envia pagina de confirmacion al navegador
  */
-void sendHTTPOKPage(uint8_t connID)
+_eESP01STATUS sendHTTPOKPage(uint8_t connID)
 {
     const char *header = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n";
     const char *body   = "<!DOCTYPE html><html><body>"
@@ -1499,7 +1581,7 @@ void sendHTTPOKPage(uint8_t connID)
                          "</body></html>";
 
     uint16_t len = (uint16_t)snprintf((char*)httpTxBuf, sizeof(httpTxBuf), "%s%s", header, body);
-    ESP01_Send(connID, httpTxBuf, 0, len, sizeof(httpTxBuf));
+    return ESP01_Send(connID, httpTxBuf, 0, len, sizeof(httpTxBuf));
 }
 
 /**
@@ -1602,7 +1684,12 @@ void httpTask(void)
 
     uint8_t connID = ESP01_GetLastConnID();
 
-    if(strstr(httpBuf, "GET /set?") != NULL){
+    if(strstr(httpBuf, "GET /data") != NULL){
+        if(sendJSONTelemetry(connID) == ESP01_SEND_READY){
+            HTTP_BUF_RESET();
+        }
+
+    } else if(strstr(httpBuf, "GET /set?") != NULL){
         char newSSID[64]  = {0};
         char newPASS[64]  = {0};
         char newIP[16]    = {0};
@@ -1619,19 +1706,16 @@ void httpTask(void)
             udpTargetPort = newPort;
 
         /* Responder al navegador */
-        sendHTTPOKPage(connID);
-
-        /* Salir del modo webserver y conectar como Station */
-        isWebserverMode = 0;
-        HTTP_BUF_RESET();
-
-        /* ESP01_SetWIFI arranca el flujo Station; OnESP01ChangeState
-         * llamara a ESP01_StartUDP cuando el WiFi este listo */
-        ESP01_SetWIFI(newSSID, newPASS);
+        if(sendHTTPOKPage(connID) == ESP01_SEND_READY){
+            isWebserverMode = 0;
+            HTTP_BUF_RESET();
+            ESP01_SetWIFI(newSSID, newPASS);
+        }
 
     } else if(strstr(httpBuf, "GET /") != NULL){
-        sendHTMLForm(connID);
-        HTTP_BUF_RESET();
+        if(sendHTMLForm(connID) == ESP01_SEND_READY){
+            HTTP_BUF_RESET();
+        }
 
     } else {
         /* favicon.ico u otras peticiones: descartar */
@@ -2054,6 +2138,10 @@ void PID_ControlTask(void) {
 	}
 
 	gyro_delta_hr = (-(int32_t) gy * 50) / 131;
+
+	// Acumulación continua de Yaw
+	int32_t gz_calibrated = gz - gz_offset;
+	total_yaw_hr += ((int64_t)gz_calibrated * DT_US) / 131000LL;
 
 		// Restauramos el filtro complementario puro. El acelerómetro DEBE
 		// permanecer activo para corregir la deriva cruzada del giroscopio.
@@ -2586,23 +2674,20 @@ int main(void)
   	HAL_UART_Receive_IT(&huart1, &byteUART_ESP01, 1); //non blocking
 
 
-  	/* ---- MODO WEBSERVER: el dispositivo levanta un AP para recibir credenciales WiFi ----
-  	 * Conectarse con el telefono a la red "MiDispositivo" (pass: 12345678)
+  	/* ---- MODO WEBSERVER / SOFTAP: el dispositivo levanta un AP para recibir credenciales WiFi ----
+  	 * Conectarse con el teléfono o PC a la red "MICRO" (contraseña: 12345678)
   	 * y navegar a 192.168.4.1 para ingresar el SSID y contraseña del router.
-  	 * Una vez recibidas las credenciales, el driver llama automaticamente a ESP01_SetWIFI().
-  	 * ---- Para volver al modo UDP/TCP comentar esta linea y descomentar las de abajo ---- */
-  	isWebserverMode = FALSE;
-  	//ESP01_SetWebServer("MICRO", "12345678", 5, 3);
+  	 * Una vez recibidas las credenciales, el driver llama automáticamente a ESP01_SetWIFI(). */
+  	isWebserverMode = TRUE;
+  	ESP01_SetWebServer("MICRO", "12345678", 5, 3);
 
-  	/* ---- AUTO-SCAN DE REDES ----
-  	 * Intenta conectar a cada red conocida en orden.
-  	 * Si falla, el callback OnESP01ChangeState pasa a la siguiente.
-  	 * Cuando conecta, carga la IP correspondiente automáticamente. */
+  	/* ---- AUTO-SCAN DE REDES (Desactivado en arranque por estar en modo SoftAP) ----
+  	 * El auto-scan se activará cuando se reciban las credenciales desde la interfaz web. */
   	currentNetworkIdx = 0;
-  	networkScanTimer = SCANTIME; /* Darle 15 segs a la primera red*/
-  	networkScanActive = 1;
-  	ESP01_SetWIFI(knownNetworks[currentNetworkIdx].ssid,
-  	              knownNetworks[currentNetworkIdx].password);
+  	networkScanTimer = 0;
+  	networkScanActive = 0;
+  	// ESP01_SetWIFI(knownNetworks[currentNetworkIdx].ssid,
+  	//               knownNetworks[currentNetworkIdx].password);
 
   	//Inicializacion de protocolo
   	unerPrtcl_Init(&USBRx, &USBTx, buffUSBRx, buffUSBTx);
