@@ -147,6 +147,7 @@ typedef enum {
 // =========================================================
 #define SCALE_LINE          1000     // Factor de escala para el término cuadrático de error de línea
 #define IR_WHITE            500      // Umbral analógico para considerar superficie blanca
+#define IR_DODGE_LINE_THRESHOLD 200  // Umbral analógico para considerar cinta negra en modo esquivar
 #define IR6_BOX_THRESHOLD   2000     // Umbral analógico para detección de caja (IR6)
 #define LINE_LOST_PHASE0    35       // Duración de la primera fase de búsqueda en ciclos
 #define LINE_LOST_PHASE1    70       // Duración de la segunda fase de búsqueda en ciclos
@@ -305,17 +306,18 @@ static char httpBuf[HTTP_BUF_SIZE];                   // Buffer para acumular el
 static uint8_t httpBufIdx = 0;                        // Índice actual en el buffer HTTP (0xFF indica petición lista)
 static uint8_t isWebserverMode = 0;                   // Estado bandera del modo Webserver activo (1 = activo, 0 = inactivo)
 static uint8_t httpTxBuf[2048];                       // Buffer de transmisión compartido para respuestas HTML y JSON
-static char udpTargetIP[16] = "192.168.0.10";         // Dirección IP de destino UDP para envío de telemetría
-static uint16_t udpTargetPort = 30010;                // Puerto de destino UDP de la aplicación de escritorio
-static uint8_t udpReadyToStart = 0;                   // Bandera que indica que el socket UDP está listo para despachar
+static char udpTargetIP[16] = "192.168.0.10";         // Dirección IP de destino UDP/TCP para envío de telemetría
+static uint16_t udpTargetPort = 30010;                // Puerto de destino UDP/TCP de la aplicación de escritorio
+static uint8_t udpReadyToStart = 0;                   // Bandera que indica que el socket UDP/TCP está listo para despachar
+static char udpTargetProto[4] = "UDP";                // Protocolo de transporte ("UDP" o "TCP")
 
 // =========================================================
 // //REDES
 // =========================================================
 static const _sWiFiNetwork knownNetworks[] = {
+		{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.10"   },
 	{ "POCOX8",    "12345678",                "10.90.109.213"   },
 	{ "FCAL-Personal", "fcal-uner+2019",       "172.22.237.227" },
-	{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.11"   },
 	{ "FCAL",    "fcalconcordia.06-2019",    "172.23.190.89"  },
 	{ "InternetPlus_872f10_EXT", "wlan78d0ef", "192.168.1.52" },
 };                                                    // Base de datos local de redes Wi-Fi a las cuales autoconectarse
@@ -423,8 +425,8 @@ uint8_t line_lost_phase = 0;                          // Fase de búsqueda secue
 uint16_t obs_detect_dist = 1000;                      // Distancia frontal de detección en mm
 uint16_t obs_corner_dist = 800;                       // Distancia lateral del sensor de 45° para validar esquina
 uint16_t obs_lost_dist = 400;                         // Distancia mínima lateral por debajo de la cual la pared terminó
-int32_t Kp_pared = 20;                                // Fuerza principal para mantener distancia lateral (90°)
-int32_t Kd_anticipo = 5;                              // Fuerza menor de ayuda/anticipación anticipada (45°)
+int32_t Kp_pared = 9;                                 // Fuerza principal para mantener distancia lateral (90°)
+int32_t Kd_anticipo = 4;                              // Fuerza menor de ayuda/anticipación anticipada (45°)
 uint16_t obs_side_dist = 1000;                        // Distancia lateral de referencia deseada para seguir la pared
 uint16_t obs_stop_cycles = 10;                        // Ciclos de inmovilización previa antes de iniciar rotación evasiva
 uint16_t obs_align_dist = 2500;                       // Distancia objetivo del sensor lateral tras rotación de 90°
@@ -507,7 +509,7 @@ void buttonTimeout10ms(_sButton *button);
 _eESP01STATUS sendJSONTelemetry(uint8_t connID);
 _eESP01STATUS sendHTMLForm(uint8_t connID);
 _eESP01STATUS sendHTTPOKPage(uint8_t connID);
-void parseHTTPGetParams(const char *httpReq, char *ssid, char *pass, char *ip, uint16_t *port);
+void parseHTTPGetParams(const char *httpReq, char *ssid, char *pass, char *ip, uint16_t *port, char *proto);
 void httpTask(void);
 void OnESP01ChangeState(_eESP01STATUS state);
 //PID
@@ -1518,7 +1520,7 @@ _eESP01STATUS sendHTMLForm(uint8_t connID)
 
     const char *header = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n";
     
-    static char body[1850];
+    static char body[1950];
     snprintf(body, sizeof(body),
         "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
         "<style>"
@@ -1541,6 +1543,7 @@ _eESP01STATUS sendHTMLForm(uint8_t connID)
         "Pass: <input name=pass type=password><br>"
         "IP PC: <input name=ip value=192.168.0.10><br>"
         "Puerto: <input name=port value=30010><br>"
+        "Protocolo: <select name=proto><option value=UDP>UDP</option><option value=TCP>TCP</option></select><br>"
         "<input type=submit value=\"Conectar\" style=\"background:#00e676;color:#000;font-weight:bold\">"
         "</form>"
         "<script>"
@@ -1588,7 +1591,7 @@ _eESP01STATUS sendHTTPOKPage(uint8_t connID)
  * @brief Extrae ssid, pass, ip y port del GET /set?ssid=X&pass=Y&ip=Z&port=W
  *        Decodificacion basica: '+' → espacio
  */
-void parseHTTPGetParams(const char *httpReq, char *ssid, char *pass, char *ip, uint16_t *port)
+void parseHTTPGetParams(const char *httpReq, char *ssid, char *pass, char *ip, uint16_t *port, char *proto)
 {
     const char *p;
     uint8_t i;
@@ -1597,6 +1600,7 @@ void parseHTTPGetParams(const char *httpReq, char *ssid, char *pass, char *ip, u
     pass[0] = '\0';
     ip[0]   = '\0';
     *port   = 30010; /* valor por defecto */
+    strcpy(proto, "UDP");
 
     /* ---- SSID ---- */
     p = strstr(httpReq, "ssid=");
@@ -1629,6 +1633,15 @@ void parseHTTPGetParams(const char *httpReq, char *ssid, char *pass, char *ip, u
         while(*p >= '0' && *p <= '9')
             val = (uint16_t)(val * 10 + (*p++ - '0'));
         if(val > 0) *port = val;
+    }
+
+    /* ---- PROTO ---- */
+    p = strstr(httpReq, "&proto=");
+    if(p){ p += 7;
+        if(strncmp(p, "TCP", 3) == 0 || strncmp(p, "tcp", 3) == 0)
+            strcpy(proto, "TCP");
+        else
+            strcpy(proto, "UDP");
     }
 }
 
@@ -1668,10 +1681,14 @@ void OnESP01ChangeState(_eESP01STATUS state)
  */
 void httpTask(void)
 {
-    /* Iniciar UDP en cuanto el WiFi este listo (viene del callback) */
+    /* Iniciar UDP/TCP en cuanto el WiFi este listo (viene del callback) */
     if(udpReadyToStart){
         udpReadyToStart = 0;
-        ESP01_StartUDP(udpTargetIP, udpTargetPort, 30001);
+        if(strcmp(udpTargetProto, "TCP") == 0){
+            ESP01_StartTCP(udpTargetIP, udpTargetPort, 30001);
+        } else {
+            ESP01_StartUDP(udpTargetIP, udpTargetPort, 30001);
+        }
         return;
     }
 
@@ -1694,16 +1711,19 @@ void httpTask(void)
         char newPASS[64]  = {0};
         char newIP[16]    = {0};
         uint16_t newPort  = 30010;
+        char newProto[4]  = "UDP";
 
-        parseHTTPGetParams(httpBuf, newSSID, newPASS, newIP, &newPort);
+        parseHTTPGetParams(httpBuf, newSSID, newPASS, newIP, &newPort, newProto);
 
-        /* Guardar IP y puerto para usarlos cuando conecte el WiFi */
+        /* Guardar IP, puerto y protocolo para usarlos cuando conecte el WiFi */
         if(newIP[0] != '\0'){
             strncpy(udpTargetIP, newIP, 15);
             udpTargetIP[15] = '\0';
         }
         if(newPort > 0)
             udpTargetPort = newPort;
+        if(newProto[0] != '\0')
+            strcpy(udpTargetProto, newProto);
 
         /* Responder al navegador */
         if(sendHTTPOKPage(connID) == ESP01_SEND_READY){
@@ -2174,6 +2194,7 @@ void PID_ControlTask(void) {
 	case STATE_DODGE:
 		// Variables estáticas locales para el control PD de pared
 		static uint16_t dodge_blind_timer = 0;
+		static uint8_t line_cleared = 0;
 
 		switch (dodgeState) {
 		case DODGE_LINE_FOLLOWING:
@@ -2181,17 +2202,17 @@ void PID_ControlTask(void) {
 			LineFollowingMEF(left_ir, center_ir, right_ir, &target_setpoint);
 
 			if (cal_ir6 > 50) {
-				int16_t ir_val = (cal_ir6 > 300) ? 300 : cal_ir6;
+				int16_t ir_val = (cal_ir6 > 500) ? 500 : cal_ir6;
 				// Rampa lineal desde attack_setpoint hasta +800
-				int32_t ramp_setpoint = attack_setpoint + ((800 - (int32_t)attack_setpoint) * (ir_val - 50)) / 250;
+				int32_t ramp_setpoint = attack_setpoint + ((800 - (int32_t)attack_setpoint) * (ir_val - 50)) / 450;
 				target_setpoint = ramp_setpoint;
 
 				// Reducción del desplazamiento lateral
-				int32_t scale_factor = 300 - ir_val;
-				turn_offset = (turn_offset * scale_factor) / 250;
+				int32_t scale_factor = 500 - ir_val;
+				turn_offset = (turn_offset * scale_factor) / 450;
 			}
 
-			if (cal_ir6 >= 300) {
+			if (cal_ir6 >= 500) {
 				target_setpoint = 800;
 				turn_offset = 0;
 				dodge_yaw = 0;
@@ -2229,6 +2250,7 @@ void PID_ControlTask(void) {
 					dodge_yaw = 0;
 					dodge_timer = 0;
 					dodge_blind_timer = 0;
+					line_cleared = 0; // Resetear validación de liberación de línea
 					dodgeState = DODGE_WALL_FOLLOWING;
 				} else {
 					// Prioridad de balanceo dinámica
@@ -2261,7 +2283,7 @@ void PID_ControlTask(void) {
 					// 2. Error de anticipación del sensor diagonal 45° (Ayuda anticipada)
 					int32_t error_anticipo = sensor_45 - wall_target;
 
-					// Seguimiento PD normal de pared
+					// Seguimiento PD normal de pared continuo
 					int32_t calculo_pd = ((error_distancia * Kp_pared) + (error_anticipo * Kd_anticipo)) / 100;
 
 					turn_offset = calculo_pd * dodge_direction;
@@ -2271,9 +2293,15 @@ void PID_ControlTask(void) {
 					if (turn_offset > wall_turn_limit)        turn_offset = wall_turn_limit;
 					else if (turn_offset < -wall_turn_limit)  turn_offset = -wall_turn_limit;
 
+					// Medida de seguridad: Validar que el robot primero haya salido completamente de la línea previa
+					if (center_ir >= IR_DODGE_LINE_THRESHOLD && left_ir >= IR_DODGE_LINE_THRESHOLD && right_ir >= IR_DODGE_LINE_THRESHOLD) {
+						line_cleared = 1;
+					}
+
 					dodge_blind_timer++;
-					if (dodge_blind_timer >= 100) { // 100 ciclos x 5ms = 500ms ciego tras rotar en el lugar
-						if (center_ir < IR_WHITE || left_ir < IR_WHITE || right_ir < IR_WHITE) {
+					// Re-enganche: Requiere haber liberado la línea previa y un mínimo de 3.0s (600 ciclos x 5ms) de marcha ciega en pared
+					if (line_cleared && dodge_blind_timer >= 600) { 
+						if (center_ir < IR_DODGE_LINE_THRESHOLD || left_ir < IR_DODGE_LINE_THRESHOLD || right_ir < IR_DODGE_LINE_THRESHOLD) {
 							turn_offset = 0;
 							lineState = LINE_FOLLOWING;
 							dodgeState = DODGE_LINE_FOLLOWING;

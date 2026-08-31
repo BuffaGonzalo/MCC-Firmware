@@ -534,7 +534,8 @@ static void ESP01ATDecode(){
 							|| esp01ATSate == ESP01CIPMUXRESPONSE
 							|| esp01ATSate == ESP01CWSAPRESPONSE
 							|| esp01ATSate == ESP01CWDHCPRESPONSE
-							|| esp01ATSate == ESP01CIPSERVERRESPONSE) {
+							|| esp01ATSate == ESP01CIPSERVERRESPONSE
+							|| esp01ATSate == ESP01CIPSTARTRESPONSE) {
 						esp01TimeoutTask = 0;
 						esp01Flags.bit.ATRESPONSEOK = 1;
 					}
@@ -965,10 +966,12 @@ static void ESP01DOConnection(){
 		ESP01ByteToBufTX('\"');
 		ESP01ByteToBufTX(',');
 		ESP01StrToBufTX(esp01RemotePORT);
-		ESP01ByteToBufTX(',');
-		ESP01StrToBufTX(esp01LocalPORT);
-		ESP01ByteToBufTX(',');
-		ESP01ByteToBufTX('0');
+		if(strcmp(esp01PROTO, "UDP") == 0){
+			ESP01ByteToBufTX(',');
+			ESP01StrToBufTX(esp01LocalPORT);
+			ESP01ByteToBufTX(',');
+			ESP01ByteToBufTX('0');
+		}
 		ESP01ByteToBufTX('\r');
 		ESP01ByteToBufTX('\n');
 		if(ESP01DbgStr != NULL)
@@ -979,10 +982,20 @@ static void ESP01DOConnection(){
 		esp01TimeoutTask = 200;
 		break;
 	case ESP01CIPSTARTRESPONSE:
-		if(esp01Flags.bit.ATRESPONSEOK)
+		if(esp01Flags.bit.ATRESPONSEOK){
+			esp01Flags.bit.UDPTCPCONNECTED = 1;
 			esp01ATSate = ESP01ATCONNECTED;
-		else
-			esp01ATSate = ESP01ATAT;
+		} else {
+			esp01Flags.bit.UDPTCPCONNECTED = 0;
+			if(esp01Flags.bit.WIFICONNECTED){
+				/* Si el WiFi sigue conectado pero TCP fallo (ej: la PC aun no abrio el puerto),
+				 * reintentar conectar TCP en 3 segundos SIN desconectar el WiFi del router. */
+				esp01ATSate = ESP01ATCIPSTART;
+				esp01TimeoutTask = 300;
+			} else {
+				esp01ATSate = ESP01ATAT;
+			}
+		}
 		break;
 	case ESP01ATCONNECTED:
 		/* En modo webserver solo esperamos conexiones entrantes */
