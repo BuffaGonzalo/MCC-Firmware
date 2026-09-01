@@ -2178,42 +2178,31 @@ void PID_ControlTask(void) {
 
 		switch (dodgeState) {
 		case DODGE_LINE_FOLLOWING:
-			// 1. Seguimiento de línea y rampa de desaceleración frontal
+			// 1. Seguimiento de línea normal continuo a velocidad máxima
 			LineFollowingMEF(left_ir, center_ir, right_ir, &target_setpoint);
 
-			if (cal_ir6 > 150) {
-				int16_t ir_val = (cal_ir6 > 500) ? 500 : cal_ir6;
-				// Rampa lineal desde attack_setpoint hasta +800 (escala de 150 a 500 = 350 puntos)
-				int32_t ramp_setpoint = attack_setpoint + ((800 - (int32_t)attack_setpoint) * (ir_val - 150)) / 350;
-				target_setpoint = ramp_setpoint;
-
-				// Reducción del desplazamiento lateral
-				int32_t scale_factor = 500 - ir_val;
-				turn_offset = (turn_offset * scale_factor) / 350;
-			}
-
+			// Cuando se detecta el obstáculo a la distancia adecuada
 			if (cal_ir6 >= 500) {
-				target_setpoint = 800;
+				target_setpoint = 1000;
 				turn_offset = 0;
 				dodge_yaw = 0;
-				dodge_timer = 0; // Reinicio vital para la espera interna
+				dodge_timer = 0; // Reinicio para la espera interna
 				dodgeState = DODGE_ROTATING;
 			}
 			break;
 
 		case DODGE_ROTATING:
-			// 2. Estado Unificado: Espera de 1 segundo + Rotación 90°
+			// 2. Estado Unificado: Espera de 3 segundos (1.5s a +1000, 1.5s a +350) + Rotación 90°
 			dodge_timer += DT_MS;
 
-			if (dodge_timer < 1000) {
-				// --- FASE INTERNA 1: ESPERA (1000 ms) ---
+			if (dodge_timer < 3000) {
+				// --- FASE INTERNA 1: ESPERA PRE-ROTACIÓN (3000 ms = 3.0s total) ---
 				turn_offset = 0;
 
-				// Clava frenos los primeros 500ms, luego se estabiliza a +350
-				if (dodge_timer < 500) {
-					target_setpoint = 800;
+				if (dodge_timer < 1500) {
+					target_setpoint = 1000; // Frenado brusco (+10.00°) durante los primeros 1.5s
 				} else {
-					target_setpoint = 0;
+					target_setpoint = 350;  // Estabilización erguida (+3.50°) durante los 1.5s restantes
 				}
 			}
 			else {
