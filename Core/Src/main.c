@@ -390,15 +390,15 @@ int32_t integral_esfuerzo = 0;                         // Integral de error de e
 int16_t angulo_modificador_pi = 0;                     // Corrección de ángulo calculado por PI (x100)
 
 /* Parámetros configurables del Lazo Externo */
-int16_t Kp_ext = 550;                                 // Ganancia proporcional de lazo externo (x1000)
-int16_t Ki_ext = 20;                                  // Ganancia integral de lazo externo (x10000)
+int16_t Kp_ext = 40;                                 // Ganancia proporcional de lazo externo (x1000)
+int16_t Ki_ext = 200;                                  // Ganancia integral de lazo externo (x10000)
 int16_t alfa_lpf = 10;                                // Coeficiente alfa del filtro LPF (0-100)
 
 // =========================================================
 // //SEGUIDOR
 // =========================================================
-int16_t Kp_line = 300;                                // Ganancia proporcional de guiñada para corrección rápida sobre la línea
-int16_t Kq_line = 15;                                 // Ganancia derivativa/cuadrática de guiñada para atenuar oscilaciones
+int16_t Kp_line = 150;                                // Ganancia proporcional de guiñada para corrección rápida sobre la línea
+int16_t Kq_line = 3;                                 // Ganancia derivativa/cuadrática de guiñada para atenuar oscilaciones
 int16_t Kp_line_backup = 300;                         // Respaldo de Kp_line al entrar a Swing
 int16_t Kq_line_backup = 15;                          // Respaldo de Kq_line al entrar a Swing
 int32_t sum_sensors = 0;                              // Suma de lecturas normalizadas de los sensores de línea activos
@@ -1996,7 +1996,7 @@ void LineFollowingMEF(int32_t left_ir, int32_t center_ir, int32_t right_ir, int3
 			error_linea = ((-(1000 * left_ir) + (1000 * right_ir)) / sum_sensors) / 10;
 			abs_error = (error_linea > 0) ? error_linea : -error_linea;
 
-			int32_t linear_term = (Kp_line * error_linea);
+			int32_t linear_term = (Kp_line * error_linea) / 100;
 			int32_t quad_term = (Kq_line * error_linea * abs_error) / SCALE_LINE;
 
 			turn_offset = linear_term + quad_term;
@@ -2181,15 +2181,15 @@ void PID_ControlTask(void) {
 			// 1. Seguimiento de línea y rampa de desaceleración frontal
 			LineFollowingMEF(left_ir, center_ir, right_ir, &target_setpoint);
 
-			if (cal_ir6 > 50) {
+			if (cal_ir6 > 150) {
 				int16_t ir_val = (cal_ir6 > 500) ? 500 : cal_ir6;
-				// Rampa lineal desde attack_setpoint hasta +800
-				int32_t ramp_setpoint = attack_setpoint + ((800 - (int32_t)attack_setpoint) * (ir_val - 50)) / 450;
+				// Rampa lineal desde attack_setpoint hasta +800 (escala de 150 a 500 = 350 puntos)
+				int32_t ramp_setpoint = attack_setpoint + ((800 - (int32_t)attack_setpoint) * (ir_val - 150)) / 350;
 				target_setpoint = ramp_setpoint;
 
 				// Reducción del desplazamiento lateral
 				int32_t scale_factor = 500 - ir_val;
-				turn_offset = (turn_offset * scale_factor) / 450;
+				turn_offset = (turn_offset * scale_factor) / 350;
 			}
 
 			if (cal_ir6 >= 500) {
@@ -2268,7 +2268,7 @@ void PID_ControlTask(void) {
 
 					turn_offset = calculo_pd * dodge_direction;
 
-					int16_t wall_turn_limit = 200;
+					int16_t wall_turn_limit = 500;
 
 					if (turn_offset > wall_turn_limit)        turn_offset = wall_turn_limit;
 					else if (turn_offset < -wall_turn_limit)  turn_offset = -wall_turn_limit;
@@ -2279,8 +2279,8 @@ void PID_ControlTask(void) {
 					}
 
 					dodge_blind_timer++;
-					// Re-enganche: Requiere haber liberado la línea previa y un mínimo de 3.0s (600 ciclos x 5ms) de marcha ciega en pared
-					if (line_cleared && dodge_blind_timer >= 600) { 
+					// Re-enganche: Requiere haber liberado la línea previa y un mínimo de 300ms (60 ciclos x 5ms) de marcha ciega en pared
+					if (line_cleared && dodge_blind_timer >= 60) { 
 						if (center_ir < IR_DODGE_LINE_THRESHOLD || left_ir < IR_DODGE_LINE_THRESHOLD || right_ir < IR_DODGE_LINE_THRESHOLD) {
 							turn_offset = 0;
 							lineState = LINE_FOLLOWING;
