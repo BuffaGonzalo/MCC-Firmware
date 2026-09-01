@@ -35,10 +35,10 @@
 ../Core/Src/main.c:1951:6:LineFollowingMEF	21
 ../Core/Src/main.c:2566:6:NormalizeLineSensors	1
 ../Core/Src/main.c:2577:6:HandleModeScreenTransition	9
-../Core/Src/main.c:2771:6:SystemClock_Config	4
-../Core/Src/main.c:3291:6:HAL_UART_RxCpltCallback	2
-../Core/Src/main.c:3304:6:HAL_UART_ErrorCallback	2
-../Core/Src/main.c:3324:6:Speed_IntegrationTask	7
+../Core/Src/main.c:2772:6:SystemClock_Config	4
+../Core/Src/main.c:3292:6:HAL_UART_RxCpltCallback	2
+../Core/Src/main.c:3305:6:HAL_UART_ErrorCallback	2
+../Core/Src/main.c:3325:6:Speed_IntegrationTask	7
 ../Core/Src/main.c:2097:6:PID_ControlTask	65
 ../Core/Src/main.c:2628:5:main	32
-../Core/Src/main.c:3471:6:Error_Handler	1
+../Core/Src/main.c:3472:6:Error_Handler	1

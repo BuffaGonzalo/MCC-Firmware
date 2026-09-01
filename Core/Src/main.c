@@ -146,7 +146,7 @@ typedef enum {
 // //SEGUIDOR
 // =========================================================
 #define SCALE_LINE          1000     // Factor de escala para el término cuadrático de error de línea
-#define IR_WHITE            500      // Umbral analógico para considerar superficie blanca
+#define IR_WHITE            200      // Umbral analógico para considerar superficie blanca
 #define IR_DODGE_LINE_THRESHOLD 200  // Umbral analógico para considerar cinta negra en modo esquivar
 #define IR6_BOX_THRESHOLD   2000     // Umbral analógico para detección de caja (IR6)
 #define LINE_LOST_PHASE0    35       // Duración de la primera fase de búsqueda en ciclos
@@ -309,7 +309,7 @@ static uint8_t httpTxBuf[2048];                       // Buffer de transmisión 
 static char udpTargetIP[16] = "192.168.0.10";         // Dirección IP de destino UDP/TCP para envío de telemetría
 static uint16_t udpTargetPort = 30010;                // Puerto de destino UDP/TCP de la aplicación de escritorio
 static uint8_t udpReadyToStart = 0;                   // Bandera que indica que el socket UDP/TCP está listo para despachar
-static char udpTargetProto[4] = "UDP";                // Protocolo de transporte ("UDP" o "TCP")
+static char udpTargetProto[4] = "TCP";                // Protocolo de transporte por defecto ("TCP" para pruebas de PID)
 
 // =========================================================
 // //REDES
@@ -2702,20 +2702,21 @@ int main(void)
   	HAL_UART_Receive_IT(&huart1, &byteUART_ESP01, 1); //non blocking
 
 
-  	/* ---- MODO WEBSERVER / SOFTAP: el dispositivo levanta un AP para recibir credenciales WiFi ----
+  	/* ---- MODO WEBSERVER / SOFTAP (Comentado para fase de pruebas directas en TCP) ----
   	 * Conectarse con el teléfono o PC a la red "MICRO" (contraseña: 12345678)
   	 * y navegar a 192.168.4.1 para ingresar el SSID y contraseña del router.
-  	 * Una vez recibidas las credenciales, el driver llama automáticamente a ESP01_SetWIFI(). */
-  	isWebserverMode = TRUE;
-  	ESP01_SetWebServer("MICRO", "12345678", 5, 3);
+  	 * Para la versión final se puede reactivar descomentando las 2 líneas siguientes: */
+  	// isWebserverMode = TRUE;
+  	// ESP01_SetWebServer("MICRO", "12345678", 5, 3);
+  	isWebserverMode = FALSE;
 
-  	/* ---- AUTO-SCAN DE REDES (Desactivado en arranque por estar en modo SoftAP) ----
-  	 * El auto-scan se activará cuando se reciban las credenciales desde la interfaz web. */
+  	/* ---- AUTO-SCAN / CONEXIÓN DIRECTA WIFI (Modo pruebas TCP) ----
+  	 * Conexión automática directa a las redes guardadas (knownNetworks) usando protocolo TCP. */
   	currentNetworkIdx = 0;
-  	networkScanTimer = 0;
-  	networkScanActive = 0;
-  	// ESP01_SetWIFI(knownNetworks[currentNetworkIdx].ssid,
-  	//               knownNetworks[currentNetworkIdx].password);
+  	networkScanTimer = SCANTIME;
+  	networkScanActive = 1;
+  	ESP01_SetWIFI(knownNetworks[currentNetworkIdx].ssid,
+  	              knownNetworks[currentNetworkIdx].password);
 
   	//Inicializacion de protocolo
   	unerPrtcl_Init(&USBRx, &USBTx, buffUSBRx, buffUSBTx);
