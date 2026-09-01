@@ -39,15 +39,15 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, READONLY, DEBUGGING, OCTETS
  17 .debug_macro  0001cc75  00000000  00000000  00057695  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 18 .debug_line   0002ba7a  00000000  00000000  0007430a  2**0
+ 18 .debug_line   0002ba77  00000000  00000000  0007430a  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 19 .debug_str    0009a194  00000000  00000000  0009fd84  2**0
+ 19 .debug_str    0009a194  00000000  00000000  0009fd81  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 20 .comment      00000043  00000000  00000000  00139f18  2**0
+ 20 .comment      00000043  00000000  00000000  00139f15  2**0
                   CONTENTS, READONLY
- 21 .debug_frame  00004a58  00000000  00000000  00139f5c  2**2
+ 21 .debug_frame  00004a58  00000000  00000000  00139f58  2**2
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 22 .debug_line_str 00000060  00000000  00000000  0013e9b4  2**0
+ 22 .debug_line_str 00000060  00000000  00000000  0013e9b0  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
 
 Disassembly of section .text:
@@ -8067,30 +8067,31 @@ void PID_ControlTask(void) {
  8003c48:	600b      	str	r3, [r1, #0]
 		current_angle = current_angle_hr / 100;
  8003c4a:	fb93 f3f2 	sdiv	r3, r3, r2
- 8003c4e:	f8df 81e4 	ldr.w	r8, [pc, #484]	@ 8003e34 <PID_ControlTask+0x354>
-	switch (robotMode) {
- 8003c52:	4c79      	ldr	r4, [pc, #484]	@ (8003e38 <PID_ControlTask+0x358>)
+	turn_offset = 0;
+ 8003c4e:	2100      	movs	r1, #0
 		current_angle = current_angle_hr / 100;
- 8003c54:	f8c8 3000 	str.w	r3, [r8]
-	int32_t target_setpoint = setpoint; 
- 8003c58:	4b78      	ldr	r3, [pc, #480]	@ (8003e3c <PID_ControlTask+0x35c>)
+ 8003c50:	f8df 81e0 	ldr.w	r8, [pc, #480]	@ 8003e34 <PID_ControlTask+0x354>
 	switch (robotMode) {
- 8003c5a:	7821      	ldrb	r1, [r4, #0]
+ 8003c54:	4c78      	ldr	r4, [pc, #480]	@ (8003e38 <PID_ControlTask+0x358>)
+		current_angle = current_angle_hr / 100;
+ 8003c56:	f8c8 3000 	str.w	r3, [r8]
 	int32_t target_setpoint = setpoint; 
- 8003c5c:	681b      	ldr	r3, [r3, #0]
-	turn_offset = 0;
- 8003c5e:	4e78      	ldr	r6, [pc, #480]	@ (8003e40 <PID_ControlTask+0x360>)
+ 8003c5a:	4b78      	ldr	r3, [pc, #480]	@ (8003e3c <PID_ControlTask+0x35c>)
+	switch (robotMode) {
+ 8003c5c:	7820      	ldrb	r0, [r4, #0]
 	int32_t target_setpoint = setpoint; 
- 8003c60:	9303      	str	r3, [sp, #12]
+ 8003c5e:	681b      	ldr	r3, [r3, #0]
 	turn_offset = 0;
- 8003c62:	2300      	movs	r3, #0
+ 8003c60:	4e77      	ldr	r6, [pc, #476]	@ (8003e40 <PID_ControlTask+0x360>)
 	switch (robotMode) {
- 8003c64:	2901      	cmp	r1, #1
+ 8003c62:	2801      	cmp	r0, #1
+	int32_t target_setpoint = setpoint; 
+ 8003c64:	9303      	str	r3, [sp, #12]
 	turn_offset = 0;
- 8003c66:	6033      	str	r3, [r6, #0]
+ 8003c66:	4d77      	ldr	r5, [pc, #476]	@ (8003e44 <PID_ControlTask+0x364>)
+ 8003c68:	6031      	str	r1, [r6, #0]
 	switch (robotMode) {
- 8003c68:	4d76      	ldr	r5, [pc, #472]	@ (8003e44 <PID_ControlTask+0x364>)
- 8003c6a:	b2cb      	uxtb	r3, r1
+ 8003c6a:	b2c3      	uxtb	r3, r0
  8003c6c:	f000 80a6 	beq.w	8003dbc <PID_ControlTask+0x2dc>
  8003c70:	2b02      	cmp	r3, #2
  8003c72:	f000 8115 	beq.w	8003ea0 <PID_ControlTask+0x3c0>
@@ -8318,133 +8319,133 @@ void PID_ControlTask(void) {
  8003e98:	000dbba0 	.word	0x000dbba0
  8003e9c:	fff24460 	.word	0xfff24460
 		switch (dodgeState) {
- 8003ea0:	49b4      	ldr	r1, [pc, #720]	@ (8004174 <PID_ControlTask+0x694>)
- 8003ea2:	7808      	ldrb	r0, [r1, #0]
- 8003ea4:	2801      	cmp	r0, #1
- 8003ea6:	b2c1      	uxtb	r1, r0
- 8003ea8:	d044      	beq.n	8003f34 <PID_ControlTask+0x454>
- 8003eaa:	2902      	cmp	r1, #2
- 8003eac:	f000 8094 	beq.w	8003fd8 <PID_ControlTask+0x4f8>
- 8003eb0:	2900      	cmp	r1, #0
- 8003eb2:	d13c      	bne.n	8003f2e <PID_ControlTask+0x44e>
+ 8003ea0:	48b4      	ldr	r0, [pc, #720]	@ (8004174 <PID_ControlTask+0x694>)
+ 8003ea2:	f890 c000 	ldrb.w	ip, [r0]
+ 8003ea6:	f1bc 0f01 	cmp.w	ip, #1
+ 8003eaa:	fa5f f08c 	uxtb.w	r0, ip
+ 8003eae:	d044      	beq.n	8003f3a <PID_ControlTask+0x45a>
+ 8003eb0:	2802      	cmp	r0, #2
+ 8003eb2:	f000 8091 	beq.w	8003fd8 <PID_ControlTask+0x4f8>
+ 8003eb6:	2800      	cmp	r0, #0
+ 8003eb8:	d13c      	bne.n	8003f34 <PID_ControlTask+0x454>
 			LineFollowingMEF(left_ir, center_ir, right_ir, &target_setpoint);
- 8003eb4:	ab03      	add	r3, sp, #12
- 8003eb6:	463a      	mov	r2, r7
- 8003eb8:	4651      	mov	r1, sl
- 8003eba:	4648      	mov	r0, r9
- 8003ebc:	f7ff fab4 	bl	8003428 <LineFollowingMEF>
+ 8003eba:	ab03      	add	r3, sp, #12
+ 8003ebc:	463a      	mov	r2, r7
+ 8003ebe:	4651      	mov	r1, sl
+ 8003ec0:	4648      	mov	r0, r9
+ 8003ec2:	f7ff fab1 	bl	8003428 <LineFollowingMEF>
 			if (cal_ir6 > 150) {
- 8003ec0:	f8bb 3000 	ldrh.w	r3, [fp]
- 8003ec4:	b21b      	sxth	r3, r3
- 8003ec6:	2b96      	cmp	r3, #150	@ 0x96
- 8003ec8:	dd20      	ble.n	8003f0c <PID_ControlTask+0x42c>
+ 8003ec6:	f8bb 3000 	ldrh.w	r3, [fp]
+ 8003eca:	b21b      	sxth	r3, r3
+ 8003ecc:	2b96      	cmp	r3, #150	@ 0x96
+ 8003ece:	dd20      	ble.n	8003f12 <PID_ControlTask+0x432>
 				int16_t ir_val = (cal_ir6 > 500) ? 500 : cal_ir6;
- 8003eca:	f8bb 3000 	ldrh.w	r3, [fp]
+ 8003ed0:	f8bb 3000 	ldrh.w	r3, [fp]
 				int32_t ramp_setpoint = attack_setpoint + ((800 - (int32_t)attack_setpoint) * (ir_val - 150)) / 350;
- 8003ece:	4aaa      	ldr	r2, [pc, #680]	@ (8004178 <PID_ControlTask+0x698>)
+ 8003ed4:	4aa8      	ldr	r2, [pc, #672]	@ (8004178 <PID_ControlTask+0x698>)
 				int16_t ir_val = (cal_ir6 > 500) ? 500 : cal_ir6;
- 8003ed0:	b21b      	sxth	r3, r3
- 8003ed2:	f5b3 7ffa 	cmp.w	r3, #500	@ 0x1f4
- 8003ed6:	bfcc      	ite	gt
- 8003ed8:	f44f 73fa 	movgt.w	r3, #500	@ 0x1f4
- 8003edc:	f8bb 3000 	ldrhle.w	r3, [fp]
+ 8003ed6:	b21b      	sxth	r3, r3
+ 8003ed8:	f5b3 7ffa 	cmp.w	r3, #500	@ 0x1f4
+ 8003edc:	bfcc      	ite	gt
+ 8003ede:	f44f 73fa 	movgt.w	r3, #500	@ 0x1f4
+ 8003ee2:	f8bb 3000 	ldrhle.w	r3, [fp]
 				int32_t ramp_setpoint = attack_setpoint + ((800 - (int32_t)attack_setpoint) * (ir_val - 150)) / 350;
- 8003ee0:	f9b2 0000 	ldrsh.w	r0, [r2]
+ 8003ee6:	f9b2 0000 	ldrsh.w	r0, [r2]
 				int16_t ir_val = (cal_ir6 > 500) ? 500 : cal_ir6;
- 8003ee4:	bfd8      	it	le
- 8003ee6:	b21b      	sxthle	r3, r3
+ 8003eea:	bfd8      	it	le
+ 8003eec:	b21b      	sxthle	r3, r3
 				int32_t ramp_setpoint = attack_setpoint + ((800 - (int32_t)attack_setpoint) * (ir_val - 150)) / 350;
- 8003ee8:	f1a3 0196 	sub.w	r1, r3, #150	@ 0x96
- 8003eec:	f5c0 7248 	rsb	r2, r0, #800	@ 0x320
- 8003ef0:	434a      	muls	r2, r1
- 8003ef2:	f44f 71af 	mov.w	r1, #350	@ 0x15e
- 8003ef6:	fb92 f2f1 	sdiv	r2, r2, r1
- 8003efa:	4402      	add	r2, r0
+ 8003eee:	f1a3 0196 	sub.w	r1, r3, #150	@ 0x96
+ 8003ef2:	f5c0 7248 	rsb	r2, r0, #800	@ 0x320
+ 8003ef6:	434a      	muls	r2, r1
+ 8003ef8:	f44f 71af 	mov.w	r1, #350	@ 0x15e
+ 8003efc:	fb92 f2f1 	sdiv	r2, r2, r1
+ 8003f00:	4402      	add	r2, r0
 				target_setpoint = ramp_setpoint;
- 8003efc:	9203      	str	r2, [sp, #12]
+ 8003f02:	9203      	str	r2, [sp, #12]
 				turn_offset = (turn_offset * scale_factor) / 350;
- 8003efe:	6832      	ldr	r2, [r6, #0]
+ 8003f04:	6832      	ldr	r2, [r6, #0]
 				int32_t scale_factor = 500 - ir_val;
- 8003f00:	f5c3 73fa 	rsb	r3, r3, #500	@ 0x1f4
+ 8003f06:	f5c3 73fa 	rsb	r3, r3, #500	@ 0x1f4
 				turn_offset = (turn_offset * scale_factor) / 350;
- 8003f04:	4353      	muls	r3, r2
- 8003f06:	fb93 f3f1 	sdiv	r3, r3, r1
- 8003f0a:	6033      	str	r3, [r6, #0]
+ 8003f0a:	4353      	muls	r3, r2
+ 8003f0c:	fb93 f3f1 	sdiv	r3, r3, r1
+ 8003f10:	6033      	str	r3, [r6, #0]
 			if (cal_ir6 >= 500) {
- 8003f0c:	f8bb 3000 	ldrh.w	r3, [fp]
- 8003f10:	b21b      	sxth	r3, r3
- 8003f12:	f5b3 7ffa 	cmp.w	r3, #500	@ 0x1f4
- 8003f16:	f6ff aeae 	blt.w	8003c76 <PID_ControlTask+0x196>
+ 8003f12:	f8bb 3000 	ldrh.w	r3, [fp]
+ 8003f16:	b21b      	sxth	r3, r3
+ 8003f18:	f5b3 7ffa 	cmp.w	r3, #500	@ 0x1f4
+ 8003f1c:	f6ff aeab 	blt.w	8003c76 <PID_ControlTask+0x196>
 				target_setpoint = 800;
- 8003f1a:	f44f 7348 	mov.w	r3, #800	@ 0x320
- 8003f1e:	9303      	str	r3, [sp, #12]
+ 8003f20:	f44f 7348 	mov.w	r3, #800	@ 0x320
+ 8003f24:	9303      	str	r3, [sp, #12]
 				turn_offset = 0;
- 8003f20:	2300      	movs	r3, #0
+ 8003f26:	2300      	movs	r3, #0
 				dodge_yaw = 0;
- 8003f22:	4a96      	ldr	r2, [pc, #600]	@ (800417c <PID_ControlTask+0x69c>)
+ 8003f28:	4a94      	ldr	r2, [pc, #592]	@ (800417c <PID_ControlTask+0x69c>)
 				turn_offset = 0;
- 8003f24:	6033      	str	r3, [r6, #0]
+ 8003f2a:	6033      	str	r3, [r6, #0]
 				dodge_yaw = 0;
- 8003f26:	6013      	str	r3, [r2, #0]
+ 8003f2c:	6013      	str	r3, [r2, #0]
 				dodge_timer = 0; // Reinicio vital para la espera interna
- 8003f28:	4a95      	ldr	r2, [pc, #596]	@ (8004180 <PID_ControlTask+0x6a0>)
- 8003f2a:	6013      	str	r3, [r2, #0]
+ 8003f2e:	4a94      	ldr	r2, [pc, #592]	@ (8004180 <PID_ControlTask+0x6a0>)
+ 8003f30:	6013      	str	r3, [r2, #0]
 				dodgeState = DODGE_ROTATING;
- 8003f2c:	2301      	movs	r3, #1
+ 8003f32:	2301      	movs	r3, #1
 			dodgeState = DODGE_WALL_FOLLOWING;
- 8003f2e:	4a91      	ldr	r2, [pc, #580]	@ (8004174 <PID_ControlTask+0x694>)
- 8003f30:	7013      	strb	r3, [r2, #0]
+ 8003f34:	4a8f      	ldr	r2, [pc, #572]	@ (8004174 <PID_ControlTask+0x694>)
+ 8003f36:	7013      	strb	r3, [r2, #0]
 			break;
- 8003f32:	e6a0      	b.n	8003c76 <PID_ControlTask+0x196>
+ 8003f38:	e69d      	b.n	8003c76 <PID_ControlTask+0x196>
 			dodge_timer += DT_MS;
- 8003f34:	f8df 9248 	ldr.w	r9, [pc, #584]	@ 8004180 <PID_ControlTask+0x6a0>
- 8003f38:	f8d9 3000 	ldr.w	r3, [r9]
- 8003f3c:	3305      	adds	r3, #5
- 8003f3e:	f8c9 3000 	str.w	r3, [r9]
+ 8003f3a:	f8df 9244 	ldr.w	r9, [pc, #580]	@ 8004180 <PID_ControlTask+0x6a0>
+ 8003f3e:	f8d9 3000 	ldr.w	r3, [r9]
+ 8003f42:	3305      	adds	r3, #5
+ 8003f44:	f8c9 3000 	str.w	r3, [r9]
 			if (dodge_timer < 1000) {
- 8003f42:	f8d9 3000 	ldr.w	r3, [r9]
- 8003f46:	f5b3 7f7a 	cmp.w	r3, #1000	@ 0x3e8
- 8003f4a:	d20a      	bcs.n	8003f62 <PID_ControlTask+0x482>
+ 8003f48:	f8d9 3000 	ldr.w	r3, [r9]
+ 8003f4c:	f5b3 7f7a 	cmp.w	r3, #1000	@ 0x3e8
+ 8003f50:	d209      	bcs.n	8003f66 <PID_ControlTask+0x486>
 				if (dodge_timer < 500) {
- 8003f4c:	f8d9 3000 	ldr.w	r3, [r9]
- 8003f50:	f5b3 7ffa 	cmp.w	r3, #500	@ 0x1f4
+ 8003f52:	f8d9 3000 	ldr.w	r3, [r9]
+ 8003f56:	f5b3 7ffa 	cmp.w	r3, #500	@ 0x1f4
 					target_setpoint = 800;
- 8003f54:	bf34      	ite	cc
- 8003f56:	f44f 7348 	movcc.w	r3, #800	@ 0x320
-					target_setpoint = 350;
- 8003f5a:	f44f 73af 	movcs.w	r3, #350	@ 0x15e
- 8003f5e:	9303      	str	r3, [sp, #12]
- 8003f60:	e689      	b.n	8003c76 <PID_ControlTask+0x196>
-				target_setpoint = 350; // Inclinación de balanceo erguido (+350) durante la rotación
- 8003f62:	f44f 72af 	mov.w	r2, #350	@ 0x15e
- 8003f66:	9203      	str	r2, [sp, #12]
+ 8003f5a:	bf36      	itet	cc
+ 8003f5c:	f44f 7348 	movcc.w	r3, #800	@ 0x320
+					target_setpoint = 0;
+ 8003f60:	9103      	strcs	r1, [sp, #12]
+					target_setpoint = 800;
+ 8003f62:	9303      	strcc	r3, [sp, #12]
+					target_setpoint = 0;
+ 8003f64:	e687      	b.n	8003c76 <PID_ControlTask+0x196>
 				integral = (integral * 7) / 10; // Atenuación de memoria inercial
- 8003f68:	220a      	movs	r2, #10
- 8003f6a:	682b      	ldr	r3, [r5, #0]
+ 8003f66:	220a      	movs	r2, #10
+ 8003f68:	682b      	ldr	r3, [r5, #0]
 				dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
- 8003f6c:	f241 3088 	movw	r0, #5000	@ 0x1388
+ 8003f6a:	f241 3088 	movw	r0, #5000	@ 0x1388
 				integral = (integral * 7) / 10; // Atenuación de memoria inercial
- 8003f70:	ebc3 03c3 	rsb	r3, r3, r3, lsl #3
- 8003f74:	fb93 f3f2 	sdiv	r3, r3, r2
- 8003f78:	602b      	str	r3, [r5, #0]
+ 8003f6e:	ebc3 03c3 	rsb	r3, r3, r3, lsl #3
+ 8003f72:	fb93 f3f2 	sdiv	r3, r3, r2
+ 8003f76:	602b      	str	r3, [r5, #0]
 				int32_t gz_calibrated = gz - gz_offset;
- 8003f7a:	4b82      	ldr	r3, [pc, #520]	@ (8004184 <PID_ControlTask+0x6a4>)
- 8003f7c:	9a01      	ldr	r2, [sp, #4]
- 8003f7e:	881b      	ldrh	r3, [r3, #0]
-				dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
- 8003f80:	4f7e      	ldr	r7, [pc, #504]	@ (800417c <PID_ControlTask+0x69c>)
+ 8003f78:	4b82      	ldr	r3, [pc, #520]	@ (8004184 <PID_ControlTask+0x6a4>)
+ 8003f7a:	9a01      	ldr	r2, [sp, #4]
+ 8003f7c:	881b      	ldrh	r3, [r3, #0]
+				target_setpoint = 0; // Inclinación (0.00°) durante la rotación
+ 8003f7e:	9103      	str	r1, [sp, #12]
 				int32_t gz_calibrated = gz - gz_offset;
- 8003f82:	b21b      	sxth	r3, r3
- 8003f84:	1ad1      	subs	r1, r2, r3
+ 8003f80:	b21b      	sxth	r3, r3
+ 8003f82:	1ad1      	subs	r1, r2, r3
 				dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
- 8003f86:	fb81 0100 	smull	r0, r1, r1, r0
- 8003f8a:	2300      	movs	r3, #0
- 8003f8c:	4a7e      	ldr	r2, [pc, #504]	@ (8004188 <PID_ControlTask+0x6a8>)
- 8003f8e:	f7fc f8f1 	bl	8000174 <__aeabi_ldivmod>
- 8003f92:	f8d7 a000 	ldr.w	sl, [r7]
+ 8003f84:	fb81 0100 	smull	r0, r1, r1, r0
+ 8003f88:	2300      	movs	r3, #0
+ 8003f8a:	4a7f      	ldr	r2, [pc, #508]	@ (8004188 <PID_ControlTask+0x6a8>)
+ 8003f8c:	f7fc f8f2 	bl	8000174 <__aeabi_ldivmod>
+ 8003f90:	4f7a      	ldr	r7, [pc, #488]	@ (800417c <PID_ControlTask+0x69c>)
 				if (abs_yaw >= 90000) { // Fin de giro (90°)
- 8003f96:	4a7d      	ldr	r2, [pc, #500]	@ (800418c <PID_ControlTask+0x6ac>)
+ 8003f92:	4a7e      	ldr	r2, [pc, #504]	@ (800418c <PID_ControlTask+0x6ac>)
 				dodge_yaw += ((int64_t)gz_calibrated * DT_US) / 131000LL;
+ 8003f94:	f8d7 a000 	ldr.w	sl, [r7]
  8003f98:	4450      	add	r0, sl
  8003f9a:	6038      	str	r0, [r7, #0]
 				int32_t abs_yaw = (dodge_yaw < 0) ? -dodge_yaw : dodge_yaw;
@@ -8472,7 +8473,7 @@ void PID_ControlTask(void) {
  8003fb8:	7013      	strb	r3, [r2, #0]
 					dodgeState = DODGE_WALL_FOLLOWING;
  8003fba:	2302      	movs	r3, #2
- 8003fbc:	e7b7      	b.n	8003f2e <PID_ControlTask+0x44e>
+ 8003fbc:	e7ba      	b.n	8003f34 <PID_ControlTask+0x454>
 					int32_t abs_error = (error < 0) ? -error : error;
  8003fbe:	4b76      	ldr	r3, [pc, #472]	@ (8004198 <PID_ControlTask+0x6b8>)
  8003fc0:	681b      	ldr	r3, [r3, #0]
@@ -8582,7 +8583,7 @@ void PID_ControlTask(void) {
 							lineState = LINE_FOLLOWING;
  8004066:	7011      	strb	r1, [r2, #0]
 							dodgeState = DODGE_LINE_FOLLOWING;
- 8004068:	e761      	b.n	8003f2e <PID_ControlTask+0x44e>
+ 8004068:	e764      	b.n	8003f34 <PID_ControlTask+0x454>
  800406a:	f44f 73fa 	mov.w	r3, #500	@ 0x1f4
  800406e:	e7d5      	b.n	800401c <PID_ControlTask+0x53c>
  8004070:	4b50      	ldr	r3, [pc, #320]	@ (80041b4 <PID_ControlTask+0x6d4>)

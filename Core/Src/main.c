@@ -2213,12 +2213,12 @@ void PID_ControlTask(void) {
 				if (dodge_timer < 500) {
 					target_setpoint = 800;
 				} else {
-					target_setpoint = 350;
+					target_setpoint = 0;
 				}
 			}
 			else {
 				// --- FASE INTERNA 2: ROTACIÓN DE 90° ---
-				target_setpoint = 350; // Inclinación de balanceo erguido (+350) durante la rotación
+				target_setpoint = 0; // Inclinación (0.00°) durante la rotación
 				integral = (integral * 7) / 10; // Atenuación de memoria inercial
 
 				int32_t gz_calibrated = gz - gz_offset;
