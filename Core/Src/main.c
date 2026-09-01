@@ -208,6 +208,7 @@ UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 volatile _eRobotMode robotMode = STATE_SWING;
+volatile _eRobotMode lastMode = (_eRobotMode)-1;
 
 // Variables de botones encapsuladas dentro de la estructura _sButton myButton
 
@@ -1855,10 +1856,6 @@ void buttonTask(_sButton *button) {
 			return;
 		}
 
-		// Limpiar pantalla a negro síncrono por hardware antes de apagar
-		ssd1306_Fill(Black);
-		ssd1306_UpdateScreen();
-
 		switch (button->clickCount) {
 			case 1:
 				robotMode = STATE_SWING;
@@ -1904,6 +1901,9 @@ void buttonTask(_sButton *button) {
 				break;
 		}
 		button->clickCount = 0; // Resetear contador
+
+		// Forzar refresco de pantalla para mantener encendido el texto del modo seleccionado
+		lastMode = (_eRobotMode)-1;
 	}
 
 	// 2. Solo tomamos decisiones de temporización de pulsación ante un EVENTO DE LIBERACIÓN
@@ -2554,7 +2554,6 @@ void NormalizeLineSensors(const uint16_t *adcDataTx_ptr, uint16_t *norm)
 
 
 void HandleModeScreenTransition(void) {
-	static _eRobotMode lastMode = (_eRobotMode)-1;
 	if (robotMode != lastMode) {
 		lastMode = robotMode;
 
