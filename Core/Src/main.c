@@ -153,11 +153,9 @@ typedef enum {
 #define LINE_LOST_PHASE1    70       // Duración de la segunda fase de búsqueda en ciclos
 
 // Estados para la sub-MEF de pérdida de línea
-#define LINE_LOST_ROT_30      0
-#define LINE_LOST_WAIT        1
-#define LINE_LOST_ROT_60      2
-#define LINE_LOST_ROT_TOTAL   3
-#define LINE_LOST_WAIT_FINAL  4
+#define LINE_LOST_ROT_90      0
+#define LINE_LOST_ROT_180     1
+#define LINE_LOST_STOPPED     2
 
 // =========================================================
 // //LUT
@@ -315,8 +313,9 @@ static char udpTargetProto[4] = "TCP";                // Protocolo de transporte
 // //REDES
 // =========================================================
 static const _sWiFiNetwork knownNetworks[] = {
-		{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.10"   },
-	{ "POCOX8",    "12345678",                "10.90.109.213"   },
+		{ "POCOX8",    "12345678",                "10.149.250.213"   },
+	{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.10"   },
+
 	{ "FCAL-Personal", "fcal-uner+2019",       "172.22.237.227" },
 	{ "FCAL",    "fcalconcordia.06-2019",    "172.23.190.89"  },
 	{ "InternetPlus_872f10_EXT", "wlan78d0ef", "192.168.1.52" },
@@ -784,8 +783,8 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		movingOff = myWord.ui16[0];
 		break;
 	case GETINTERNALDATA:
-		// Estructura simplificada para sincronización de parámetros (60 bytes de datos + 1 chk)
-		unerPrtcl_PutHeaderOnTx(dataTx, GETINTERNALDATA, 79);
+		// Estructura simplificada para sincronización de parámetros (62 bytes de datos + 1 chk)
+		unerPrtcl_PutHeaderOnTx(dataTx, GETINTERNALDATA, 81);
 
 		// 1. Bloque PID Balancín (10 bytes: Kp, Ki, Kd, Max, Min)
 		int16_t pid_bal[5] = { Kp_stable, Ki_stable, Kd_stable, (int16_t)minPWM_Right, (int16_t)minPWM_Left};
@@ -800,8 +799,8 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((setpoint >> 16) & 0xFF));
 		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((setpoint >> 24) & 0xFF));
 
-		// 3. Bloque Seguimiento y Offsets (14 bytes: KpL, KdL, OffL, OffR, Turn, Attack, Brake)
-		int16_t params_ext[7] = { Kp_line, Kq_line, offset_left, offset_right, custom_turn, attack_setpoint, 0 };
+		// 3. Bloque Seguimiento y Offsets (14 bytes: KpL, KdL, OffL, OffR, Turn, Attack, Kp_pared)
+		int16_t params_ext[7] = { Kp_line, Kq_line, offset_left, offset_right, custom_turn, attack_setpoint, (int16_t)Kp_pared };
 		for (int i = 0; i < 7; i++) {
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (params_ext[i] & 0xFF));
 			unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((params_ext[i] >> 8) & 0xFF));
@@ -867,6 +866,10 @@ void decodeCommand(_sComm *dataRx, _sComm *dataTx) {
 		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((cal_center_ir >> 8) & 0xFF));
 		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (cal_right_ir & 0xFF));
 		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((cal_right_ir >> 8) & 0xFF));
+
+		// 13. Kd Pared / Anticipo (2 bytes: Kd_anticipo)
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) (Kd_anticipo & 0xFF));
+		unerPrtcl_PutByteOnTx(dataTx, (uint8_t) ((Kd_anticipo >> 8) & 0xFF));
 
 		// Checksum final
 		unerPrtcl_PutByteOnTx(dataTx, dataTx->chk);
@@ -1979,7 +1982,7 @@ void LineFollowingMEF(int32_t left_ir, int32_t center_ir, int32_t right_ir, int3
 			if (line_lost_debounce_count >= 6) {
 				line_lost_debounce_count = 0;
 				line_lost_timer = 0;
-				line_lost_phase = LINE_LOST_ROT_30;
+				line_lost_phase = LINE_LOST_ROT_90;
 				line_lost_yaw = 0;
 				search_direction = (last_line_error >= 0) ? -1 : 1;
 				lineState = LINE_LOST;
@@ -2008,7 +2011,8 @@ void LineFollowingMEF(int32_t left_ir, int32_t center_ir, int32_t right_ir, int3
 		break;
 
 	case LINE_LOST:
-		if (ir3_active) {
+		// Verificar constantemente en cada ciclo si CUALQUIERA de los 3 sensores toca la línea
+		if (active_count > 0) {
 			lineState = LINE_FOLLOWING;
 			break;
 		}
@@ -2019,63 +2023,39 @@ void LineFollowingMEF(int32_t left_ir, int32_t center_ir, int32_t right_ir, int3
 			line_lost_yaw += ((int64_t)gz_cal * DT_US) / 131000LL;
 		}
 
-		// Configurar setpoint de equilibrio menos inclinado para evitar cabeceo excesivo
-		*target_setpoint = -100;
+		// Setpoint de equilibrio erguido a +350 durante la búsqueda y frenado
+		*target_setpoint = 350;
 
 		switch (line_lost_phase) {
-		case LINE_LOST_ROT_30:
-			// Rotar 30 grados hacia el lado de la línea (en el sentido de search_direction)
+		case LINE_LOST_ROT_90:
+			// Rotar 90 grados hacia el lado donde se perdió la línea (ej: izquierda si el auto se fue a la derecha)
 			turn_offset = (search_direction > 0) ? 350 : -350;
 			{
 				int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
-				if (abs_yaw >= 30000) { // 30 grados = 30,000 miligrados
+				if (abs_yaw >= 90000) { // 90 grados = 90,000 milígrados
 					line_lost_yaw = 0;
 					line_lost_timer = 0;
-					line_lost_phase = LINE_LOST_WAIT;
+					line_lost_phase = LINE_LOST_ROT_180;
 				}
 			}
 			break;
 
-		case LINE_LOST_WAIT:
-			// Detener rotación durante 500 ms (100 ciclos x 5 ms = 500 ms)
-			turn_offset = 0;
-			line_lost_timer++;
-			if (line_lost_timer >= 100) {
-				line_lost_yaw = 0;
-				line_lost_timer = 0;
-				line_lost_phase = LINE_LOST_ROT_60;
-			}
-			break;
-
-		case LINE_LOST_ROT_60:
-			// Rotar 60 grados hacia el otro lado (opuesto a search_direction)
+		case LINE_LOST_ROT_180:
+			// Rotar 180 grados en sentido opuesto
 			turn_offset = (search_direction > 0) ? -350 : 350;
 			{
 				int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
-				if (abs_yaw >= 60000) { // 60 grados = 60,000 miligrados
+				if (abs_yaw >= 180000) { // 180 grados = 180,000 milígrados
 					line_lost_yaw = 0;
 					line_lost_timer = 0;
-					line_lost_phase = LINE_LOST_ROT_TOTAL;
+					line_lost_phase = LINE_LOST_STOPPED;
 				}
 			}
 			break;
 
-		case LINE_LOST_ROT_TOTAL:
-			// Rotar 360 grados en sentido contrario al caso de 60 grados (es decir, en el sentido de search_direction)
-			turn_offset = (search_direction > 0) ? 350 : -350;
-			{
-				int32_t abs_yaw = (line_lost_yaw < 0) ? -line_lost_yaw : line_lost_yaw;
-				if (abs_yaw >= 360000) { // 360 grados = 360,000 miligrados
-					line_lost_yaw = 0;
-					line_lost_timer = 0;
-					line_lost_phase = LINE_LOST_WAIT_FINAL;
-				}
-			}
-			break;
-
-		case LINE_LOST_WAIT_FINAL:
+		case LINE_LOST_STOPPED:
 		default:
-			// Parar motores
+			// Frenado estático estricto con setpoint +350
 			turn_offset = 0;
 			break;
 		}
@@ -2501,9 +2481,8 @@ void PID_ControlTask(void) {
 	if (pwm_right > (int32_t) maxPWM)  pwm_right = (int32_t) maxPWM;
 	if (pwm_right < -(int32_t) maxPWM) pwm_right = -(int32_t) maxPWM;
 
-	// Silenciado de motores si no estamos en un modo de movimiento o si se detuvo por pérdida de línea
-	if ((robotMode != STATE_SWING && robotMode != STATE_LINE_FOLLOWING && robotMode != STATE_DODGE) ||
-		(robotMode == STATE_LINE_FOLLOWING && lineState == LINE_LOST && line_lost_phase == LINE_LOST_WAIT_FINAL)) {
+	// Silenciado de motores si no estamos en un modo de movimiento
+	if (robotMode != STATE_SWING && robotMode != STATE_LINE_FOLLOWING && robotMode != STATE_DODGE) {
 		pwm_left = 0;
 		pwm_right = 0;
 		integral = 0;
