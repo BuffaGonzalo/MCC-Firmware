@@ -314,7 +314,7 @@ static char udpTargetProto[4] = "TCP";                // Protocolo de transporte
 // //REDES
 // =========================================================
 static const _sWiFiNetwork knownNetworks[] = {
-		{ "POCOX8",    "12345678",                "10.149.250.213"   },
+		{ "POCOX8",    "12345678",                "10.43.37.213"   },
 	{ "ARPANET", "1969-Apolo_11-2022",       "192.168.0.10"   },
 
 	{ "FCAL-Personal", "fcal-uner+2019",       "172.22.237.227" },
@@ -408,7 +408,7 @@ int32_t linear_term = 0;                              // Aporte proporcional del
 int32_t quad_term = 0;                                // Aporte cuadrático/derivativo del control de dirección
 int32_t turn_offset = 0;                              // Fuerza de rotación mezclada con el PID y enviada a los motores (Yaw)
 int32_t last_line_error = 0;                          // Error de línea del ciclo anterior
-int16_t custom_turn = 1;                              // Intensidad de giro prefijada para fases ciegas de búsqueda
+int16_t custom_turn = 350;                            // Intensidad de giro prefijada para fases ciegas de búsqueda
 int16_t vel_damp_div = 500;                           // Divisor del término amortiguador de velocidad
 int16_t vel_damp_limit = 100;                         // Límite del amortiguador de velocidad
 int16_t turn_limit = 1000;                            // Límite superior absoluto del esfuerzo de giro motor (Yaw)
@@ -440,7 +440,7 @@ uint16_t obs_align_dist = 2500;                       // Distancia objetivo del 
 typedef enum {
     DODGE_LINE_FOLLOWING,  // Seguimiento de línea con rampa de desaceleración
     DODGE_ROTATING,        // Espera de 1s integrada + Rotación de 90° con giroscopio
-    DODGE_WALL_FOLLOWING   // Evasión PD continua y retorno a la pista
+    DODGE_WALL_FOLLOWING   // Evasión PD continua
 } _eDodgeSubState;
 
 
@@ -1964,10 +1964,13 @@ void LineFollowingMEF(int32_t left_ir, int32_t center_ir, int32_t right_ir, int3
 
 	switch (lineState) {
 	case LINE_SEARCHING:
+		*target_setpoint = attack_setpoint;
 		if (ir3_active) {
 			lineState = LINE_FOLLOWING;
 		} else {
-			turn_offset = -custom_turn;
+			int16_t active_turn = (custom_turn > 50) ? custom_turn : 350;
+			turn_offset = -active_turn;
+			last_turn_offset = turn_offset;
 		}
 		break;
 
@@ -2173,7 +2176,6 @@ void PID_ControlTask(void) {
 
 	case STATE_DODGE:
 		// Variables estáticas locales para el control PD de pared
-		static uint16_t dodge_blind_timer = 0;
 		static uint8_t line_cleared = 0;
 
 		switch (dodgeState) {
@@ -2207,7 +2209,7 @@ void PID_ControlTask(void) {
 			}
 			else {
 				// --- FASE INTERNA 2: ROTACIÓN DE 90° ---
-				target_setpoint = 0; // Inclinación (0.00°) durante la rotación
+				target_setpoint = 350; // Inclinación (+3.50°) durante la rotación para buena adherencia
 				integral = (integral * 7) / 10; // Atenuación de memoria inercial
 
 				int32_t gz_calibrated = gz - gz_offset;
@@ -2218,15 +2220,14 @@ void PID_ControlTask(void) {
 					turn_offset = 0;
 					dodge_yaw = 0;
 					dodge_timer = 0;
-					dodge_blind_timer = 0;
 					line_cleared = 0; // Resetear validación de liberación de línea
 					dodgeState = DODGE_WALL_FOLLOWING;
 				} else {
-					// Prioridad de balanceo dinámica
-					int32_t base_turn = 250;
+					// Prioridad de balanceo dinámica con par de rotación firme
+					int32_t base_turn = 350;
 					int32_t abs_error = (error < 0) ? -error : error;
 
-					if (abs_error > 250) {
+					if (abs_error > 450) {
 						turn_offset = 0;
 						integral = 0;
 					} else {
@@ -2237,7 +2238,7 @@ void PID_ControlTask(void) {
 			break;
 
 		case DODGE_WALL_FOLLOWING: {
-					target_setpoint = attack_setpoint;
+					target_setpoint = -1400; // Setpoint de avance de -14.00° para seguimiento de pared
 
 					// Sensores de pared: 90° para control principal de distancia, 45° para anticipación anticipada
 					int16_t sensor_90 = (dodge_direction == 1) ? cal_ir0 : cal_ir2;
@@ -2267,12 +2268,15 @@ void PID_ControlTask(void) {
 						line_cleared = 1;
 					}
 
-					dodge_blind_timer++;
-					// Re-enganche: Requiere haber liberado la línea previa y un mínimo de 300ms (60 ciclos x 5ms) de marcha ciega en pared
-					if (line_cleared && dodge_blind_timer >= 60) { 
+					dodge_timer += DT_MS;
+					// Re-enganche: Esperar 5 segundos (5000 ms) antes de buscar la línea nuevamente
+					if ((line_cleared || dodge_timer >= 5000) && dodge_timer >= 5000) {
 						if (center_ir < IR_DODGE_LINE_THRESHOLD || left_ir < IR_DODGE_LINE_THRESHOLD || right_ir < IR_DODGE_LINE_THRESHOLD) {
-							turn_offset = 0;
-							lineState = LINE_FOLLOWING;
+							int16_t active_turn = (custom_turn > 50) ? custom_turn : 350;
+							turn_offset = -active_turn;
+							dodge_yaw = 0;
+							dodge_timer = 0;
+							lineState = LINE_SEARCHING;
 							dodgeState = DODGE_LINE_FOLLOWING;
 						}
 					}
