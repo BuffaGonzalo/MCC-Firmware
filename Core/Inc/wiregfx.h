@@ -48,4 +48,15 @@ void WIREGFX_Graphics_DrawPyramid(void);
  */
 void WIREGFX_Graphics_DrawSphere(void);
 
+/**
+ * @brief Gestiona la animación y rotación secuencial de figuras 3D cada 10 segundos.
+ * Orden: Cubo -> Teseracto -> Pirámide.
+ */
+void WIREGFX_DisplayTask(void);
+
+/**
+ * @brief Reinicia el ciclo para comenzar desde la primera figura (Cubo).
+ */
+void WIREGFX_ResetCycle(void);
+
 #endif /* INC_WIREGFX_H_ */

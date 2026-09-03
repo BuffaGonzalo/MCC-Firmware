@@ -272,3 +272,41 @@ void WIREGFX_Graphics_DrawSphere(void) {
 
     angle_x += 1; angle_y += 2; angle_z += 1; // Giro suave
 }
+
+static uint32_t wiregfx_last_switch_tick = 0;
+static uint8_t wiregfx_figure_index = 0; // 0: Cubo, 1: Teseracto, 2: Pirámide
+
+void WIREGFX_ResetCycle(void) {
+    wiregfx_last_switch_tick = HAL_GetTick();
+    wiregfx_figure_index = 0;
+}
+
+void WIREGFX_DisplayTask(void) {
+    uint32_t now = HAL_GetTick();
+    if (wiregfx_last_switch_tick == 0) {
+        wiregfx_last_switch_tick = now;
+    }
+
+    // Cada 10 segundos (10,000 ms) se cambia de figura
+    if ((now - wiregfx_last_switch_tick) >= 10000) {
+        wiregfx_last_switch_tick = now;
+        wiregfx_figure_index = (wiregfx_figure_index + 1) % 3;
+    }
+
+    // Orden de renderizado: Cubo -> Teseracto -> Pirámide
+    switch (wiregfx_figure_index) {
+        case 0:
+            WIREGFX_Graphics_DrawCube();
+            break;
+        case 1:
+            WIREGFX_Graphics_DrawTesseract();
+            break;
+        case 2:
+            WIREGFX_Graphics_DrawPyramid();
+            break;
+        default:
+            wiregfx_figure_index = 0;
+            WIREGFX_Graphics_DrawCube();
+            break;
+    }
+}
